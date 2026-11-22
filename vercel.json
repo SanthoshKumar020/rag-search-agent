@@ -1,1 +1,1 @@
-{"functions":{"api/index.py":{"includeFiles":"{templates,static}/**","maxDuration":60}}}
+{"functions":{"api/index.py":{"includeFiles":"{templates,static,skills}/**","maxDuration":60}}}

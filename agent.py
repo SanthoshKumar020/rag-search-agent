@@ -11,6 +11,9 @@ Usage:
   python agent.py memory list
   python agent.py goals list
   python agent.py artifacts list
+  python agent.py skills
+  python agent.py remind add "Revise SQL joins" --due 2026-11-25
+  python agent.py remind list
 
 Pipeline: web search -> fetch -> chunk -> embed -> retrieve -> LLM.
 Optional browse drives real Chromium. The `agent` command runs a
@@ -398,6 +401,50 @@ def cmd_artifacts(args) -> int:
     return 1
 
 
+def cmd_skills(args) -> int:
+    import skills
+
+    found = skills.list_skills()
+    if not found:
+        print("(no skills installed)")
+        return 0
+    for s in found:
+        print(f"  {s['name']}: {s['description']}")
+    return 0
+
+
+def cmd_remind(args) -> int:
+    import reminders
+
+    if args.remind_cmd == "add":
+        try:
+            r = reminders.add(args.text, args.due)
+        except ValueError as exc:
+            print(f"Could not add reminder: {exc}", file=sys.stderr)
+            return 1
+        print(f"Created [{r['id']}]: {r['text']} (due {r['due']})")
+        return 0
+    if args.remind_cmd == "list":
+        items = reminders.list_reminders(include_done=args.all)
+        if not items:
+            print("(no reminders)")
+            return 0
+        for r in items:
+            mark = "✓ " if r.get("done") else ""
+            print(f"  {mark}[{r['id']}] {r['text']} (due {r['due']})")
+        return 0
+    if args.remind_cmd == "done":
+        try:
+            r = reminders.mark_done(args.id)
+        except KeyError as exc:
+            print(str(exc), file=sys.stderr)
+            return 1
+        print(f"Done [{r['id']}]: {r['text']}")
+        return 0
+    print("Unknown remind command", file=sys.stderr)
+    return 1
+
+
 def main() -> int:
     parser = argparse.ArgumentParser(
         prog="agent.py",
@@ -464,6 +511,22 @@ def main() -> int:
     a_show = a_sub.add_parser("show")
     a_show.add_argument("id")
     p_art.set_defaults(func=cmd_artifacts)
+
+    p_skills = sub.add_parser("skills", help="list installed agent skills")
+    p_skills.set_defaults(func=cmd_skills)
+
+    p_remind = sub.add_parser("remind", help="add / list / complete reminders")
+    r_sub = p_remind.add_subparsers(dest="remind_cmd", required=True)
+    r_add = r_sub.add_parser("add")
+    r_add.add_argument("text")
+    r_add.add_argument("--due", required=True,
+                       help="ISO date/datetime, e.g. 2026-11-25")
+    r_list = r_sub.add_parser("list")
+    r_list.add_argument("--all", action="store_true",
+                        help="include completed reminders")
+    r_done = r_sub.add_parser("done")
+    r_done.add_argument("id")
+    p_remind.set_defaults(func=cmd_remind)
 
     args = parser.parse_args()
     log(f"embeddings: {config.embed_backend()} | llm: {config.llm_backend()}")

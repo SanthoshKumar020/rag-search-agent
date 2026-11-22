@@ -17,6 +17,9 @@ import artifacts
 import config
 import goals
 import memory
+import reminders
+import skills
+import tools_extra
 from fetch import MIN_TEXT, fetch_text
 from llm import generate
 from search import web_search
@@ -45,12 +48,22 @@ Reply with ONLY a single JSON object, no markdown fences, in one of these forms:
 {{"tool": "web_search", "query": "..."}}
 {{"tool": "fetch_page", "url": "..."}}
 {{"tool": "browse", "task": "..."}}
+{{"tool": "get_datetime"}}
+{{"tool": "weather", "city": "..."}}
+{{"tool": "news", "topic": "..."}}  (topic optional — omit for top headlines)
+{{"tool": "wikipedia", "query": "..."}}
+{{"tool": "calculate", "expression": "2*(3+4)"}}
+{{"tool": "currency", "amount": 100, "from": "USD", "to": "INR"}}
 {{"tool": "remember", "fact": "...", "kind": "fact|preference"}}
 {{"tool": "create_goal", "title": "...", "plan": "..."}}
 {{"tool": "update_goal", "id": "...", "status": "active|done|paused|cancelled", "note": "..."}}
 {{"tool": "list_goals"}}
+{{"tool": "create_reminder", "text": "...", "due": "2026-11-25"}}
+{{"tool": "list_reminders"}}
 {{"tool": "save_artifact", "title": "...", "content": "...", "kind": "markdown|text|code"}}
 {{"tool": "recall_memory", "query": "..."}}
+{{"tool": "list_skills"}}
+{{"tool": "use_skill", "name": "interview-prep"}}
 {{"tool": "finish", "answer": "..."}}
 """
 
@@ -148,6 +161,92 @@ def _run_tool(action: dict[str, Any], on_event: EventCallback) -> str:
             f"- [{g['id']}] {g['title']}" for g in active
         )
 
+    if tool == "get_datetime":
+        on_event({"type": "tool", "tool": "get_datetime"})
+        return tools_extra.get_datetime()
+
+    if tool == "weather":
+        city = (action.get("city") or "").strip()
+        on_event({"type": "tool", "tool": "weather", "query": city})
+        try:
+            return tools_extra.weather(city)
+        except Exception as exc:
+            return f"Weather lookup failed: {exc}"
+
+    if tool == "news":
+        topic = (action.get("topic") or "").strip()
+        on_event({"type": "tool", "tool": "news", "query": topic})
+        try:
+            return tools_extra.news(topic)
+        except Exception as exc:
+            return f"News lookup failed: {exc}"
+
+    if tool == "wikipedia":
+        q = (action.get("query") or "").strip()
+        on_event({"type": "tool", "tool": "wikipedia", "query": q})
+        try:
+            return tools_extra.wikipedia(q)
+        except Exception as exc:
+            return f"Wikipedia lookup failed: {exc}"
+
+    if tool == "calculate":
+        expr = (action.get("expression") or "").strip()
+        on_event({"type": "tool", "tool": "calculate", "query": expr})
+        return tools_extra.calculate(expr)
+
+    if tool == "currency":
+        on_event({"type": "tool", "tool": "currency",
+                  "query": f"{action.get('amount')} "
+                           f"{action.get('from')}->{action.get('to')}"})
+        try:
+            return tools_extra.currency(action.get("amount"),
+                                        action.get("from") or "",
+                                        action.get("to") or "")
+        except Exception as exc:
+            return f"Currency conversion failed: {exc}"
+
+    if tool == "create_reminder":
+        text = (action.get("text") or "").strip()
+        due = (action.get("due") or "").strip()
+        on_event({"type": "tool", "tool": "create_reminder", "fact": text})
+        try:
+            r = reminders.add(text, due)
+            return f"Created reminder [{r['id']}]: {r['text']} (due {r['due']})"
+        except ValueError as exc:
+            return f"Could not create reminder: {exc}"
+
+    if tool == "list_reminders":
+        on_event({"type": "tool", "tool": "list_reminders"})
+        items = reminders.list_reminders()
+        if not items:
+            return "No open reminders."
+        return "Open reminders:\n" + "\n".join(
+            f"- [{r['id']}] {r['text']} (due {r['due']})" for r in items
+        )
+
+    if tool == "list_skills":
+        on_event({"type": "tool", "tool": "list_skills"})
+        found = skills.list_skills()
+        if not found:
+            return "No skills installed."
+        return "Available skills:\n" + "\n".join(
+            f"- {s['name']}: {s['description']}" for s in found
+        )
+
+    if tool == "use_skill":
+        name = (action.get("name") or "").strip()
+        on_event({"type": "tool", "tool": "use_skill", "fact": name})
+        rec = skills.load_skill(name)
+        if not rec:
+            available = ", ".join(s["name"] for s in skills.list_skills())
+            return (f"Skill not found: {name}. Available skills: "
+                    f"{available or '(none)'}")
+        # run_agent picks the instructions up from the action and adds
+        # them to the run context; this observation is the confirmation.
+        return (f"Skill '{rec['name']}' is now active — its instructions "
+                "have been added to your context for the rest of this run. "
+                "Follow them from the next step.")
+
     if tool == "save_artifact":
         title = (action.get("title") or "Untitled").strip()
         content = action.get("content") or ""
@@ -183,11 +282,13 @@ def run_agent(
     transcript: list[str] = [f"User task: {task}"]
     steps: list[str] = []
     tools_used: list[str] = []
+    skill_context: list[str] = []  # instructions from use_skill, kept all run
 
     for i in range(1, max_steps + 1):
         user_msg = (
             "Conversation so far:\n"
             + "\n".join(transcript[-12:])
+            + (("\n\n" + "\n\n".join(skill_context)) if skill_context else "")
             + f"\n\nStep {i}/{max_steps}. Choose the next tool JSON (or finish)."
         )
         emit({"type": "agent_thinking", "step": i, "max_steps": max_steps})
@@ -243,6 +344,14 @@ def run_agent(
         except Exception as exc:
             # one failing tool (e.g. storage error) must not kill the run
             observation = f"Tool {tool} failed: {exc}"
+        if tool == "use_skill":
+            rec = skills.load_skill((action.get("name") or "").strip())
+            if rec:
+                skill_context.append(
+                    f"--- Active skill: {rec['name']} ---\n"
+                    f"{rec['instructions']}"
+                )
+                emit({"type": "skill_active", "name": rec["name"]})
         transcript.append(f"Assistant tool call: {json.dumps(action, ensure_ascii=False)}")
         transcript.append(f"Observation: {observation[:3000]}")
         emit({"type": "tool_result", "tool": tool, "preview": observation[:400]})

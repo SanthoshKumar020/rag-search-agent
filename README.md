@@ -18,6 +18,17 @@ Everything runs on **free tiers** (Groq / HuggingFace). With no API keys it stil
 | **Goals** | Long-running objectives across sessions |
 | **Artifacts** | Saved documents/code the agent produces |
 
+## What's inside (v2)
+
+- **Modes** — Ask (grounded Q&A), Reply (grounded drafts), Browse (local Chromium), Agent (multi-step tool loop), plus a **Live activity panel** that streams every page the agent opens.
+- **Agent tools** — `web_search`, `fetch_page`, `browse`, `get_datetime`, `weather` (Open-Meteo), `news` (Google News / BBC RSS), `wikipedia`, `calculate` (safe AST arithmetic — no eval), `currency` (open.er-api.com), `remember` / `recall_memory`, `create_goal` / `update_goal` / `list_goals`, `create_reminder` / `list_reminders`, `save_artifact`, `list_skills` / `use_skill`, `finish`. All network tools are free and keyless.
+- **Skills** — reusable instruction packs in `skills/*.md` (front-matter `name` + `description`, then instructions). Ships with `interview-prep` (Data Engineer coaching), `job-hunt-tracker` (JD → fit analysis + goal + memory), and `daily-briefing`. In Agent mode: *"Use the daily-briefing skill and brief me."* List them with `python agent.py skills`.
+- **☀️ Briefing panel** — the web UI opens with today's date, weather for your city (memory preference `city`, default Chennai), reminders due today/overdue, active goals, latest memory facts, and newest artifacts (`GET /api/briefing`).
+- **Reminders** — `python agent.py remind add "Revise SQL joins" --due 2026-11-25`, `remind list`, `remind done <id>`.
+- **History** — every web run is saved (mode, query, answer, sources) and listed in the History panel; click one to restore it (`GET /api/history`).
+- **Model picker** — the web UI can switch ask/reply between GPT-OSS 120B (default), GPT-OSS 20B (fast), and Qwen 3.8 27B. Agent mode keeps its own tuned model (`AGENT_MODEL`).
+- **Browse on hosted servers** — instead of a raw library error, the web UI explains up front that Browse needs a local Chromium and how to run it on your own computer.
+
 ## Quick start
 
 ```bash
@@ -98,6 +109,11 @@ On Vercel, Ask/Reply work; Browse and heavy Agent tools that need Chromium stay 
 | `memory.py` | Facts & preferences |
 | `goals.py` | Goal tracker |
 | `artifacts.py` | Saved outputs |
+| `reminders.py` | Reminders store |
+| `skills.py` + `skills/*.md` | Skill loader + starter skills |
+| `tools_extra.py` | Keyless tools: datetime, weather, news, Wikipedia, calculator, currency |
+| `briefing.py` | Morning briefing assembly (`/api/briefing`) |
+| `history.py` | Web chat history (`/api/history`) |
 | `browser_agent.py` | Optional Chromium agent |
 | `search.py` / `fetch.py` / `embed.py` / `index_store.py` / `llm.py` | RAG pipeline |
 | `web_app.py` | Flask UI + SSE |
@@ -109,9 +125,11 @@ On Vercel, Ask/Reply work; Browse and heavy Agent tools that need Chromium stay 
 | `GROQ_API_KEY` | Generation + agent + browser (https://console.groq.com) |
 | `HF_TOKEN` | Embeddings + fallback chat (https://huggingface.co/settings/tokens) |
 
-## Limits
+## Limits (honest)
 
-- Free-tier rate limits apply.
+- Free-tier rate limits apply (Groq may 429 on heavy agent runs — wait a minute and retry).
 - Agent step count is capped (default 8) to control cost.
-- Browse needs local Chromium; not for pure serverless.
+- **Browse stays local-only.** It needs a real Chromium via browser-use; hosted serverless (Vercel) cannot run it, so the hosted UI shows an explanation card instead.
+- **Web memory is ephemeral on Vercel.** Memory, goals, reminders, artifacts, and history are stored in `config.DATA_DIR` — locally that's `data/` in the repo; on Vercel's read-only filesystem it falls back to the server temp dir and resets when the instance restarts. Run locally for durable memory.
+- The public web URL has no login — anyone with the link can run queries against your free-tier quota.
 - Never auto-pays or sends real email — by design.

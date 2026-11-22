@@ -22,6 +22,14 @@
   const liveFeedEl = document.getElementById("live-feed");
   const liveRetrievedEl = document.getElementById("live-retrieved");
   const liveHitsEl = document.getElementById("live-hits");
+  const modelEl = document.getElementById("model");
+  const modelWrap = document.getElementById("model-wrap");
+  const browseHostedEl = document.getElementById("browse-hosted");
+  const briefingBody = document.getElementById("briefing-body");
+  const skillsListEl = document.getElementById("skills-list");
+  const historyListEl = document.getElementById("history-list");
+
+  let browseAvailable = null; // null = not checked yet
 
   const PLACEHOLDERS = {
     ask: "e.g. What is Delta Lake medallion architecture?",
@@ -39,12 +47,22 @@
     return el ? el.value : "ask";
   }
 
+  function showBrowseHosted() {
+    browseHostedEl.classList.remove("hidden");
+    browseHostedEl.scrollIntoView({ block: "nearest" });
+  }
+
   function updateModeUI() {
     const mode = currentMode();
     queryEl.placeholder = PLACEHOLDERS[mode] || PLACEHOLDERS.ask;
     webToggleWrap.classList.toggle("hidden", mode === "browse" || mode === "agent");
+    modelWrap.classList.toggle("hidden", mode !== "ask" && mode !== "reply");
     browseHint.classList.toggle("hidden", mode !== "browse");
     agentHint.classList.toggle("hidden", mode !== "agent");
+    // On hosts without a real browser, Browse gets the explanation card
+    // up front instead of a raw error after submit.
+    browseHostedEl.classList.toggle(
+      "hidden", !(mode === "browse" && browseAvailable === false));
     if (mode === "browse") liveTitleEl.textContent = "🖱️ Browser agent";
     else if (mode === "agent") liveTitleEl.textContent = "🤖 Agent tools";
     else liveTitleEl.textContent = "🌐 Live activity";
@@ -267,7 +285,16 @@
         setLiveState("agent finished", "ok");
         addStep("agent finished");
         break;
+      case "skill_active":
+        appendToolCard("🧩 Skill active: " + (ev.name || ""), "");
+        addStep("skill active: " + (ev.name || ""));
+        break;
 
+      case "browse_unavailable":
+        showBrowseHosted();
+        setLiveState("local only", "bad");
+        addStep("browse unavailable on this host — see the explanation card");
+        break;
       case "answer":
         renderAnswer(ev, mode);
         break;
@@ -286,7 +313,10 @@
     const resp = await fetch("/api/query/stream", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ query: query, mode: mode, use_web: webEl.checked }),
+      body: JSON.stringify({
+        query: query, mode: mode, use_web: webEl.checked,
+        model: modelEl.value,
+      }),
     });
     if (!resp.ok || !resp.body) throw new Error("stream failed (" + resp.status + ")");
     const reader = resp.body.getReader();
@@ -313,9 +343,16 @@
     const resp = await fetch("/api/query", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ query: query, mode: mode, use_web: webEl.checked }),
+      body: JSON.stringify({
+        query: query, mode: mode, use_web: webEl.checked,
+        model: modelEl.value,
+      }),
     });
     const data = await resp.json();
+    if (data.error_code === "browse_unavailable_hosted") {
+      showBrowseHosted();
+      return;
+    }
     if (!resp.ok && data.error && !data.answer) {
       showError(data.error);
       if (data.note) { noteEl.textContent = data.note; noteEl.classList.remove("hidden"); }
@@ -350,6 +387,7 @@
     } finally {
       btn.disabled = false;
       statusEl.classList.add("hidden");
+      loadHistory();
     }
   }
 
@@ -357,4 +395,125 @@
   queryEl.addEventListener("keydown", function (e) {
     if (e.key === "Enter" && (e.metaKey || e.ctrlKey)) run();
   });
+
+  // ---- Panels loaded on page load ------------------------------------
+
+  function el(tag, cls, text) {
+    const node = document.createElement(tag);
+    if (cls) node.className = cls;
+    if (text != null) node.textContent = text;
+    return node;
+  }
+
+  async function checkHealth() {
+    try {
+      const resp = await fetch("/api/health");
+      const data = await resp.json();
+      browseAvailable = !!data.browse_available;
+    } catch (e) {
+      browseAvailable = false;
+    }
+    updateModeUI();
+  }
+
+  async function loadBriefing() {
+    try {
+      const resp = await fetch("/api/briefing");
+      const b = await resp.json();
+      if (!resp.ok || b.error) throw new Error(b.error || resp.status);
+      briefingBody.innerHTML = "";
+      briefingBody.appendChild(el("p", "briefing-date",
+        "☀️ " + (b.date || "") + (b.city ? " · " + b.city : "")));
+      if (b.weather) {
+        const w = b.weather;
+        const rain = (w.rain_chance == null) ? "rain n/a"
+          : "rain " + Math.round(w.rain_chance) + "%";
+        briefingBody.appendChild(el("p", null,
+          "🌡️ " + w.temp_min + "°C – " + w.temp_max + "°C, " +
+          w.conditions + ", " + rain));
+      } else {
+        briefingBody.appendChild(el("p", "muted", "🌡️ Weather unavailable right now."));
+      }
+      if (b.reminders_due && b.reminders_due.length) {
+        const p = el("p", null, "⏰ Due: ");
+        p.appendChild(el("span", null, b.reminders_due.map(function (r) {
+          return r.text + " (" + r.due + ")";
+        }).join("; ")));
+        briefingBody.appendChild(p);
+      }
+      if (b.goals && b.goals.length) {
+        const p = el("p", null, "🎯 Goals: ");
+        p.appendChild(el("span", null, b.goals.map(function (g) {
+          return g.title;
+        }).join(" · ")));
+        briefingBody.appendChild(p);
+      }
+      if (b.memory_facts && b.memory_facts.length) {
+        const ul = el("ul", "briefing-facts");
+        b.memory_facts.forEach(function (f) {
+          ul.appendChild(el("li", null, f));
+        });
+        briefingBody.appendChild(ul);
+      }
+      if (b.artifacts && b.artifacts.length) {
+        briefingBody.appendChild(el("p", "muted",
+          "🗂️ Latest artifacts: " + b.artifacts.map(function (a) {
+            return a.title;
+          }).join(" · ")));
+      }
+    } catch (e) {
+      briefingBody.innerHTML = "";
+      briefingBody.appendChild(el("p", "muted", "Briefing unavailable right now."));
+    }
+  }
+
+  async function loadSkills() {
+    try {
+      const resp = await fetch("/api/skills");
+      const data = await resp.json();
+      skillsListEl.innerHTML = "";
+      (data.skills || []).forEach(function (s) {
+        const li = el("li");
+        li.appendChild(el("strong", null, s.name));
+        li.appendChild(el("span", null, " — " + (s.description || "")));
+        skillsListEl.appendChild(li);
+      });
+      if (!skillsListEl.children.length) {
+        skillsListEl.appendChild(el("li", "muted", "No skills installed."));
+      }
+    } catch (e) { /* panel stays empty */ }
+  }
+
+  async function loadHistory() {
+    try {
+      const resp = await fetch("/api/history");
+      const data = await resp.json();
+      historyListEl.innerHTML = "";
+      (data.history || []).forEach(function (entry) {
+        const li = el("li", "history-item");
+        const when = entry.timestamp
+          ? new Date(entry.timestamp).toLocaleString() : "";
+        li.appendChild(el("span", "history-meta",
+          "[" + entry.mode + "] " + when + " — "));
+        li.appendChild(el("span", "history-q", entry.query));
+        li.title = "Click to restore this answer";
+        li.addEventListener("click", function () {
+          stepLines.length = 0;
+          renderAnswer(
+            { answer: entry.answer, sources: entry.sources || [], steps: [] },
+            entry.mode);
+          resultEl.scrollIntoView({ block: "nearest" });
+        });
+        historyListEl.appendChild(li);
+      });
+      if (!historyListEl.children.length) {
+        historyListEl.appendChild(el("li", "muted", "No runs yet."));
+      }
+    } catch (e) { /* panel stays empty */ }
+  }
+
+  checkHealth();
+  loadBriefing();
+  loadSkills();
+  loadHistory();
 })();

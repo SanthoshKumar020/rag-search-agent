@@ -10,11 +10,49 @@ from flask import (Flask, Response, jsonify, render_template, request,
                    stream_with_context)
 
 import agent as pipeline
+import briefing
 import config
+import history
+import skills
 from llm import generate
 
 app = Flask(__name__)
 _pipeline_lock = threading.Lock()
+
+# Friendly, structured explanation used whenever Browse mode is requested
+# on a host that cannot run a real Chromium (e.g. Vercel serverless).
+BROWSE_HOSTED_MESSAGE = (
+    "Browse mode needs a real Chromium browser, which this hosted server "
+    "can't run. It works when you run this app on your own computer: "
+    "1) pip install 'browser-use==1.0.8'  "
+    "2) playwright install chromium  "
+    "3) put your free Groq key in .env  "
+    "4) run the app locally and choose Browse."
+)
+
+
+def _browse_unavailable_payload():
+    return {
+        "error_code": "browse_unavailable_hosted",
+        "message": BROWSE_HOSTED_MESSAGE,
+        "error": BROWSE_HOSTED_MESSAGE,
+        "answer": "",
+        "sources": [],
+        "steps": [],
+    }
+
+
+def _requested_model(data: dict) -> str | None:
+    """Web model picker: only allowlisted Groq models, else None."""
+    model = (data.get("model") or "").strip()
+    return model if model in config.WEB_MODELS else None
+
+
+def _record(mode: str, query: str, answer: str, sources=None) -> None:
+    try:
+        history.add_entry(mode, query, answer, sources or [])
+    except Exception:
+        pass  # history is best-effort; never break a query over it
 
 
 def _run_with_steps(fn, *args):
@@ -88,12 +126,31 @@ def health():
     })
 
 
+@app.get("/api/skills")
+def api_skills():
+    return jsonify({"skills": skills.list_skills()})
+
+
+@app.get("/api/briefing")
+def api_briefing():
+    try:
+        return jsonify(briefing.build_briefing())
+    except Exception as exc:
+        return jsonify({"error": f"Briefing failed: {exc}"}), 502
+
+
+@app.get("/api/history")
+def api_history():
+    return jsonify({"history": history.list_history()})
+
+
 @app.post("/api/query")
 def query():
     data = request.get_json(silent=True) or {}
     text = (data.get("query") or "").strip()
     mode = (data.get("mode") or "ask").lower()
     use_web = data.get("use_web", True)
+    model = _requested_model(data)  # ask/reply only; agent keeps AGENT_MODEL
     if mode not in ("ask", "reply", "browse", "agent"):
         mode = "ask"
     if not text:
@@ -123,9 +180,11 @@ def query():
 
     sources = _sources_json(hits)
     if not hits:
+        answer = ("No evidence could be retrieved for that input. "
+                  "Try rephrasing, or enable web search.")
+        _record(mode, text, answer, [])
         return jsonify({
-            "answer": ("No evidence could be retrieved for that input. "
-                       "Try rephrasing, or enable web search."),
+            "answer": answer,
             "sources": [],
             "steps": steps,
         })
@@ -141,7 +200,7 @@ def query():
                 f"{evidence}\n\nDraft the reply.")
 
     try:
-        answer = generate(system, user)
+        answer = generate(system, user, model=model)
     except Exception as exc:
         answer = None
         steps.append(f"generation failed ({exc}); showing evidence instead")
@@ -150,14 +209,17 @@ def query():
         note = ("No LLM key configured on the server — showing the "
                 "retrieved evidence instead of a generated answer. "
                 "Set GROQ_API_KEY (or HF_TOKEN) to enable generation.")
+        evidence_text = _evidence_text(hits)
+        _record(mode, text, evidence_text, sources)
         return jsonify({
-            "answer": _evidence_text(hits),
+            "answer": evidence_text,
             "sources": sources,
             "steps": steps,
             "note": note,
             "evidence_only": True,
         })
 
+    _record(mode, text, answer, sources)
     return jsonify({
         "answer": answer,
         "sources": sources,
@@ -181,6 +243,7 @@ def _agent_oneshot(task: str):
             "steps": [],
             "error": f"Agent failed: {exc}",
         }), 502
+    _record("agent", task, result.get("answer") or "", [])
     return jsonify({
         "answer": result.get("answer") or "",
         "sources": [],
@@ -201,14 +264,7 @@ def _browse_oneshot(task: str):
         }), 501
 
     if not browser_agent.available():
-        return jsonify({
-            "answer": "", "sources": [], "steps": [],
-            "error": browser_agent._missing_message(),
-            "note": (
-                "Browse mode needs browser-use + local Chromium. "
-                "Not available on pure serverless (Vercel)."
-            ),
-        }), 501
+        return jsonify(_browse_unavailable_payload()), 501
 
     try:
         result = browser_agent.run_browser_task(task, max_steps=40, headless=True)
@@ -219,6 +275,7 @@ def _browse_oneshot(task: str):
             "error": f"Browser agent failed: {exc}",
         }), 502
 
+    _record("browse", task, result, [])
     return jsonify({
         "answer": result, "sources": [],
         "steps": ["browser agent completed the task"],
@@ -241,6 +298,7 @@ def query_stream():
     text = (data.get("query") or "").strip()
     mode = (data.get("mode") or "ask").lower()
     use_web = data.get("use_web", True)
+    model = _requested_model(data)  # ask/reply only; agent keeps AGENT_MODEL
     if mode not in ("ask", "reply", "browse", "agent"):
         mode = "ask"
     if not text:
@@ -301,8 +359,10 @@ def query_stream():
         hits = outcome["hits"]
         sources = _sources_json(hits)
         if not hits:
+            no_ev = "No evidence could be retrieved for that input."
+            _record(mode, text, no_ev, [])
             yield sse({"type": "answer",
-                       "text": "No evidence could be retrieved for that input.",
+                       "text": no_ev,
                        "sources": [], "evidence_only": False})
             yield sse({"type": "done"})
             return
@@ -310,7 +370,7 @@ def query_stream():
         yield sse({"type": "generating"})
         system, user = _prompts(mode, text, hits)
         try:
-            answer = generate(system, user)
+            answer = generate(system, user, model=model)
         except Exception as exc:
             answer = None
             yield sse({"type": "error",
@@ -318,9 +378,12 @@ def query_stream():
         if answer is None:
             note = ("No LLM key configured — showing retrieved evidence. "
                     "Set GROQ_API_KEY (or HF_TOKEN) to enable generation.")
-            yield sse({"type": "answer", "text": _evidence_text(hits),
+            evidence_text = _evidence_text(hits)
+            _record(mode, text, evidence_text, sources)
+            yield sse({"type": "answer", "text": evidence_text,
                        "sources": sources, "evidence_only": True, "note": note})
         else:
+            _record(mode, text, answer, sources)
             yield sse({"type": "answer", "text": answer,
                        "sources": sources, "evidence_only": False})
         yield sse({"type": "done"})
@@ -370,6 +433,7 @@ def _agent_stream(task: str, sse):
             return
 
         result = outcome.get("result") or {}
+        _record("agent", task, result.get("answer") or "", [])
         yield sse({
             "type": "answer",
             "text": result.get("answer") or "",
@@ -398,15 +462,10 @@ def _browse_stream(task: str, sse):
             return
 
         if not browser_agent.available():
-            yield sse({"type": "error", "message": browser_agent._missing_message()})
             yield sse({
-                "type": "answer",
-                "text": (
-                    "Browse mode needs browser-use + local Chromium.\n"
-                    f'CLI: python agent.py browse "{task[:80]}"'
-                ),
-                "sources": [], "evidence_only": True,
-                "note": "Browse mode requires a local browser.",
+                "type": "browse_unavailable",
+                "error_code": "browse_unavailable_hosted",
+                "message": BROWSE_HOSTED_MESSAGE,
             })
             yield sse({"type": "done"})
             return
@@ -440,6 +499,7 @@ def _browse_stream(task: str, sse):
             yield sse({"type": "done"})
             return
 
+        _record("browse", task, outcome.get("result", ""), [])
         yield sse({
             "type": "answer", "text": outcome.get("result", "(no result)"),
             "sources": [], "evidence_only": False, "mode": "browse",

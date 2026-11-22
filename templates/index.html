@@ -14,6 +14,11 @@
         with memory, goals, and artifacts — grounded in live web evidence.</p>
     </header>
 
+    <section id="briefing" class="card">
+      <h2 class="panel-title">☀️ Briefing</h2>
+      <div id="briefing-body"><p class="muted">Loading briefing…</p></div>
+    </section>
+
     <section class="card">
       <div class="modes" role="radiogroup" aria-label="Mode">
         <label>
@@ -42,6 +47,14 @@
           <input type="checkbox" id="use-web" checked>
           <span>Use web search</span>
         </label>
+        <label class="toggle" id="model-wrap">
+          <span>Model</span>
+          <select id="model">
+            <option value="openai/gpt-oss-120b" selected>GPT-OSS 120B (default)</option>
+            <option value="openai/gpt-oss-20b">GPT-OSS 20B (fast)</option>
+            <option value="qwen/qwen3.8-27b">Qwen 3.8 27B</option>
+          </select>
+        </label>
         <button id="go" type="button">Run</button>
       </div>
 
@@ -49,9 +62,21 @@
         Browse opens real Chromium and follows instructions step by step.
         It will <strong>never submit payment</strong>. Local only (not on Vercel).
       </p>
+      <div id="browse-hosted" class="hosted-card hidden">
+        <strong>🖱️ Browse mode runs on your own computer</strong>
+        <p>Browse mode needs a real Chromium browser, which this hosted server
+          can't run. It works when you run this app on your own computer:</p>
+        <ol>
+          <li><code>pip install 'browser-use==1.0.8'</code></li>
+          <li><code>playwright install chromium</code></li>
+          <li>Put your free Groq key in <code>.env</code></li>
+          <li>Run the app locally and choose Browse</li>
+        </ol>
+      </div>
       <p id="agent-hint" class="browse-hint hidden">
-        Agent mode uses tools: web search, fetch, memory, goals, artifacts, optional browse.
-        Example: <em>Research top 3 vector DBs and save a comparison markdown.</em>
+        Agent mode uses tools: web search, fetch, weather, news, Wikipedia, calculator,
+        currency, reminders, skills, memory, goals, artifacts, optional browse.
+        Example: <em>Use the daily-briefing skill and brief me.</em>
       </p>
 
       <div id="status" class="status hidden">
@@ -85,6 +110,17 @@
         <ul id="steps"></ul>
       </details>
     </section>
+
+    <section id="skills-panel" class="card">
+      <h2 class="panel-title">🧩 Skills</h2>
+      <ul id="skills-list" class="skills-list"></ul>
+      <p class="muted">In Agent mode, try: <em>“Use the interview-prep skill for Databricks questions.”</em></p>
+    </section>
+
+    <details id="history-panel" class="card">
+      <summary>🕘 History</summary>
+      <ul id="history-list" class="history-list"></ul>
+    </details>
 
     <footer>
       <p>Free tiers (Groq / HuggingFace). Muse-inspired features: memory, goals, artifacts, tool loop.

@@ -56,6 +56,13 @@ GROQ_MODEL = os.environ.get("GROQ_MODEL", "openai/gpt-oss-120b")
 # tool calls; gpt-oss models loop / return empty steps there, while
 # qwen3.8-27b follows the JSON protocol (same lesson as BROWSE_MODEL).
 AGENT_MODEL = os.environ.get("AGENT_MODEL", "qwen/qwen3.8-27b")
+# Models the web UI's picker may request for ask/reply (all available on
+# the user's free Groq key). Anything else sent by a client is ignored.
+WEB_MODELS = [
+    "openai/gpt-oss-120b",   # default — strongest
+    "openai/gpt-oss-20b",    # fast
+    "qwen/qwen3.8-27b",
+]
 HF_EMBED_MODEL = "sentence-transformers/all-MiniLM-L6-v2"
 HF_CHAT_MODEL = "meta-llama/Llama-3.1-8B-Instruct"
 
