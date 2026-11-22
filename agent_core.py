@@ -14,6 +14,7 @@ import re
 from typing import Any, Callable, Optional
 
 import artifacts
+import config
 import goals
 import memory
 from fetch import MIN_TEXT, fetch_text
@@ -190,7 +191,16 @@ def run_agent(
             + f"\n\nStep {i}/{max_steps}. Choose the next tool JSON (or finish)."
         )
         emit({"type": "agent_thinking", "step": i, "max_steps": max_steps})
-        raw = generate(system, user_msg)
+        try:
+            raw = generate(system, user_msg, model=config.AGENT_MODEL)
+        except Exception as exc:
+            answer = (
+                f"The model call failed at step {i} ({exc}). Progress so "
+                "far is in the steps above — free-tier rate limits are the "
+                "usual cause; wait a minute and re-run."
+            )
+            emit({"type": "error", "message": answer})
+            return {"answer": answer, "steps": steps, "tools_used": tools_used}
         if raw is None:
             answer = (
                 "No LLM key configured. Set GROQ_API_KEY or HF_TOKEN to run "
@@ -198,6 +208,19 @@ def run_agent(
             )
             emit({"type": "error", "message": answer})
             return {"answer": answer, "steps": steps, "tools_used": tools_used}
+
+        if not raw.strip():
+            # empty model response (some free models return blank content
+            # on a reasoning step) — nudge and continue instead of
+            # returning an empty answer
+            steps.append(f"step {i}: empty model response, continuing")
+            transcript.append(
+                "Observation: (your last reply was empty — reply with a "
+                "tool JSON or the finish tool)"
+            )
+            emit({"type": "tool_result", "tool": "retry",
+                  "preview": "empty model response"})
+            continue
 
         action = _parse_action(raw)
         if not action:

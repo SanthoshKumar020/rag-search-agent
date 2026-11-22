@@ -25,6 +25,10 @@ TOP_K = 5                   # chunks retrieved per query
 
 # Models (all free-tier)
 GROQ_MODEL = os.environ.get("GROQ_MODEL", "openai/gpt-oss-120b")
+# The tool-using agent loop needs a model that reliably emits plain JSON
+# tool calls; gpt-oss models loop / return empty steps there, while
+# qwen3.8-27b follows the JSON protocol (same lesson as BROWSE_MODEL).
+AGENT_MODEL = os.environ.get("AGENT_MODEL", "qwen/qwen3.8-27b")
 HF_EMBED_MODEL = "sentence-transformers/all-MiniLM-L6-v2"
 HF_CHAT_MODEL = "meta-llama/Llama-3.1-8B-Instruct"
 

@@ -14,12 +14,15 @@ GROQ_URL = "https://api.groq.com/openai/v1/chat/completions"
 HF_ROUTER_URL = "https://router.huggingface.co/v1/chat/completions"
 
 
-def generate(system: str, user: str) -> str | None:
-    """Return generated text, or None if no LLM key is configured."""
+def generate(system: str, user: str, model: str | None = None) -> str | None:
+    """Return generated text, or None if no LLM key is configured.
+
+    `model` optionally overrides the Groq model (used by the agent loop,
+    which needs a model that follows its JSON tool protocol)."""
     backend = config.llm_backend()
     if backend == "groq":
-        return _chat(GROQ_URL, config.GROQ_API_KEY, config.GROQ_MODEL,
-                     system, user)
+        return _chat(GROQ_URL, config.GROQ_API_KEY,
+                     model or config.GROQ_MODEL, system, user)
     if backend == "huggingface":
         return _chat(HF_ROUTER_URL, config.HF_TOKEN, config.HF_CHAT_MODEL,
                      system, user)
