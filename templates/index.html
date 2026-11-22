@@ -1,0 +1,68 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Search + RAG Reply Agent</title>
+  <link rel="stylesheet" href="{{ url_for('static', filename='style.css') }}">
+</head>
+<body>
+  <main class="wrap">
+    <header>
+      <h1>🔎 Search + RAG Reply Agent</h1>
+      <p class="sub">Ask a question or paste a message — the agent searches the web,
+        reads the top pages, and answers (or drafts a reply) grounded in what it
+        found, with sources cited.</p>
+    </header>
+
+    <section class="card">
+      <div class="modes" role="radiogroup" aria-label="Mode">
+        <label>
+          <input type="radio" name="mode" value="ask" checked>
+          <span>Ask — grounded answer</span>
+        </label>
+        <label>
+          <input type="radio" name="mode" value="reply">
+          <span>Reply — draft a response</span>
+        </label>
+      </div>
+
+      <textarea id="query" rows="4"
+        placeholder="e.g. What is Delta Lake medallion architecture?"></textarea>
+
+      <div class="row">
+        <label class="toggle">
+          <input type="checkbox" id="use-web" checked>
+          <span>Use web search</span>
+        </label>
+        <button id="go" type="button">Run agent</button>
+      </div>
+
+      <div id="status" class="status hidden">
+        <span class="spinner"></span>
+        <span id="status-text">Working… searching, reading pages and retrieving evidence. This can take 20–60 seconds.</span>
+      </div>
+      <p id="error" class="error hidden"></p>
+    </section>
+
+    <section id="result" class="card hidden">
+      <h2 id="result-title">Answer</h2>
+      <p id="note" class="note hidden"></p>
+      <div id="answer" class="answer"></div>
+      <h3>Sources</h3>
+      <ol id="sources" class="sources"></ol>
+      <details id="steps-box">
+        <summary>What the agent did</summary>
+        <ul id="steps"></ul>
+      </details>
+    </section>
+
+    <footer>
+      <p>Free tiers only (Groq / HuggingFace). With no LLM key configured the
+        agent returns the retrieved evidence instead of a generated answer.
+        Answers are only as good as their sources — check the citations.</p>
+    </footer>
+  </main>
+  <script src="{{ url_for('static', filename='app.js') }}"></script>
+</body>
+</html>

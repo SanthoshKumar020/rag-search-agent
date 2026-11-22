@@ -1,7 +1,8 @@
 """LLM generation on free tiers.
 
 Order of preference:
-  1. Groq (OpenAI-compatible) — llama-3.3-70b-versatile, needs GROQ_API_KEY
+  1. Groq (OpenAI-compatible) — openai/gpt-oss-120b by default
+     (override with GROQ_MODEL), needs GROQ_API_KEY
   2. HuggingFace inference router chat model, needs HF_TOKEN
   3. None — caller falls back to printing retrieved evidence.
 """

@@ -38,11 +38,42 @@ python agent.py add ~/notes/project-docs/
 python agent.py ask --local "What did we decide about the schema?"
 ```
 
+## Web app (Vercel)
+
+The same pipeline is available as a small web app (`web_app.py`): a
+chat-style page where you type a question or paste a message, pick
+**Ask** (grounded answer with citations) or **Reply** (draft a reply),
+toggle web search on/off, and get the answer plus its sources. The web
+index is built in memory per request — nothing is written to disk, so
+it runs fine on serverless hosting.
+
+**Deploy on Vercel:**
+
+1. Import this repo in Vercel (New Project → Import Git Repository).
+   `vercel.json` and `api/index.py` are already configured — no build
+   settings to change.
+2. In the project's **Settings → Environment Variables**, add
+   `GROQ_API_KEY` (and optionally `HF_TOKEN`). Keys are read only from
+   the environment at runtime; never commit them to the repo.
+3. Deploy. Every `git push` to `main` redeploys automatically.
+
+Without any key set, the web app still works — it returns the retrieved
+evidence instead of a generated answer, exactly like the CLI.
+
+Run it locally the same way as the CLI environment:
+
+```bash
+python web_app.py   # http://127.0.0.1:5000
+```
+
+The CLI (`agent.py ask / reply / add`) works exactly as before and is
+unaffected by the web app.
+
 ## Free API keys (optional but recommended)
 
 | Key | Used for | Get it free |
 | --- | -------- | ----------- |
-| `GROQ_API_KEY` | Answer/reply generation (Llama 3.3 70B) | https://console.groq.com |
+| `GROQ_API_KEY` | Answer/reply generation (Groq, default model `openai/gpt-oss-120b`; override with `GROQ_MODEL`) | https://console.groq.com |
 | `HF_TOKEN` | Semantic embeddings (all-MiniLM-L6-v2) + fallback chat model | https://huggingface.co/settings/tokens |
 
 Put them in `.env` (see `.env.example`). Behaviour by configuration:
@@ -75,7 +106,7 @@ Put them in `.env` (see `.env.example`). Behaviour by configuration:
  [5] RETRIEVE  numpy cosine similarity, top 5 chunks
         |
         v
- [6] GENERATE  Groq Llama 3.3 70B (or HF chat) writes the answer /
+ [6] GENERATE  Groq gpt-oss-120b (or HF chat) writes the answer /
                reply with inline [n] citations + a Sources list
 ```
 
@@ -93,6 +124,8 @@ persistent on-disk index (`index/vectors.npz` + `index/chunks.json`).
 | `index_store.py` | Persistent numpy vector index + retrieval |
 | `llm.py` | Groq / HuggingFace generation |
 | `config.py` | Keys, model names, tuning constants |
+| `web_app.py` | Flask web UI (`/` page + `POST /api/query`) over the same pipeline |
+| `api/index.py` | Vercel serverless entrypoint (imports the app from `web_app.py`) |
 
 ## Honest limits
 

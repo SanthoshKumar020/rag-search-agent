@@ -24,7 +24,7 @@ CHUNK_OVERLAP = 120         # characters of overlap between chunks
 TOP_K = 5                   # chunks retrieved per query
 
 # Models (all free-tier)
-GROQ_MODEL = "llama-3.3-70b-versatile"
+GROQ_MODEL = os.environ.get("GROQ_MODEL", "openai/gpt-oss-120b")
 HF_EMBED_MODEL = "sentence-transformers/all-MiniLM-L6-v2"
 HF_CHAT_MODEL = "meta-llama/Llama-3.1-8B-Instruct"
 
