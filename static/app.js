@@ -388,6 +388,8 @@
       btn.disabled = false;
       statusEl.classList.add("hidden");
       loadHistory();
+      loadActivity();
+      loadMemory();
     }
   }
 
@@ -512,8 +514,256 @@
     } catch (e) { /* panel stays empty */ }
   }
 
+  // ---- Voice (Web Speech API, client-side only) ---------------------
+
+  const micBtn = document.getElementById("mic");
+  const voiceStatus = document.getElementById("voice-status");
+  const listenBtn = document.getElementById("listen");
+  const SpeechRec = window.SpeechRecognition || window.webkitSpeechRecognition;
+
+  if (!SpeechRec) {
+    micBtn.disabled = true;
+    voiceStatus.textContent = "Voice input isn't supported in this browser.";
+  } else {
+    let recognising = false;
+    const rec = new SpeechRec();
+    rec.lang = "en-IN";
+    rec.interimResults = false;
+    rec.addEventListener("result", function (e) {
+      const transcript = e.results[0][0].transcript;
+      queryEl.value = transcript;
+      voiceStatus.textContent = "Heard: “" + transcript + "”";
+      queryEl.focus();
+    });
+    rec.addEventListener("end", function () {
+      recognising = false;
+      micBtn.textContent = "🎤 Speak";
+    });
+    rec.addEventListener("error", function (e) {
+      voiceStatus.textContent = "Voice error: " + e.error;
+    });
+    micBtn.addEventListener("click", function () {
+      if (recognising) { rec.stop(); return; }
+      try {
+        rec.start();
+        recognising = true;
+        micBtn.textContent = "⏹️ Stop";
+        voiceStatus.textContent = "Listening… speak now.";
+      } catch (err) { /* already running */ }
+    });
+  }
+
+  if (!("speechSynthesis" in window)) {
+    listenBtn.classList.add("hidden");
+  } else {
+    // reveal the Listen button whenever an answer is rendered
+    const origRender = renderAnswer;
+    renderAnswer = function (data, mode) {
+      origRender(data, mode);
+      listenBtn.classList.remove("hidden");
+    };
+    listenBtn.addEventListener("click", function () {
+      if (window.speechSynthesis.speaking) {
+        window.speechSynthesis.cancel();
+        listenBtn.textContent = "🔊 Listen";
+        return;
+      }
+      const text = (answerEl.textContent || "").slice(0, 1500);
+      if (!text) return;
+      const utter = new SpeechSynthesisUtterance(text);
+      utter.lang = "en-IN";
+      utter.addEventListener("end", function () {
+        listenBtn.textContent = "🔊 Listen";
+      });
+      listenBtn.textContent = "⏹️ Stop";
+      window.speechSynthesis.speak(utter);
+    });
+  }
+
+  // ---- Live cards ----------------------------------------------------
+
+  async function loadCards() {
+    const wEl = document.getElementById("card-weather");
+    const fxEl = document.getElementById("card-fx");
+    const nEl = document.getElementById("card-news");
+    try {
+      const resp = await fetch("/api/cards");
+      const c = await resp.json();
+      wEl.innerHTML = "";
+      wEl.appendChild(el("div", "mini-title", "🌡️ Weather · " + (c.city || "")));
+      if (c.weather) {
+        wEl.appendChild(el("p", null,
+          c.weather.temp_min + "°C – " + c.weather.temp_max + "°C, " +
+          c.weather.conditions +
+          (c.weather.rain_chance == null ? "" :
+            " · rain " + Math.round(c.weather.rain_chance) + "%")));
+      } else wEl.appendChild(el("p", "muted", "Unavailable"));
+      fxEl.innerHTML = "";
+      fxEl.appendChild(el("div", "mini-title", "💱 USD → INR"));
+      if (c.fx) {
+        fxEl.appendChild(el("p", null,
+          "1 USD = ₹" + Number(c.fx.rate).toFixed(2)));
+        fxEl.appendChild(el("p", "muted mini-sub", c.fx.updated || ""));
+      } else fxEl.appendChild(el("p", "muted", "Unavailable"));
+      nEl.innerHTML = "";
+      nEl.appendChild(el("div", "mini-title", "📰 Top headlines"));
+      const ul = el("ul", "mini-news");
+      (c.headlines || []).forEach(function (h) {
+        const li = el("li");
+        const a = document.createElement("a");
+        a.href = h.link; a.target = "_blank"; a.rel = "noopener";
+        a.textContent = h.title;
+        li.appendChild(a);
+        ul.appendChild(li);
+      });
+      if (!ul.children.length) ul.appendChild(el("li", "muted", "Unavailable"));
+      nEl.appendChild(ul);
+    } catch (e) { /* cards stay in loading state */ }
+  }
+
+  // ---- Ideas ----------------------------------------------------------
+
+  async function loadIdeas() {
+    const list = document.getElementById("ideas-list");
+    try {
+      const resp = await fetch("/api/ideas");
+      const data = await resp.json();
+      list.innerHTML = "";
+      (data.ideas || []).forEach(function (idea) {
+        const li = el("li", "idea-item");
+        li.appendChild(el("span", null, idea));
+        const b = el("button", "small-btn", "Run this");
+        b.type = "button";
+        b.addEventListener("click", function () {
+          const radio = document.querySelector(
+            'input[name="mode"][value="agent"]');
+          if (radio) { radio.checked = true; updateModeUI(); }
+          queryEl.value = idea;
+          window.scrollTo({ top: 0, behavior: "smooth" });
+          queryEl.focus();
+        });
+        li.appendChild(b);
+        list.appendChild(li);
+      });
+      if (!list.children.length) {
+        list.appendChild(el("li", "muted", "No ideas right now."));
+      }
+    } catch (e) { /* panel stays empty */ }
+  }
+
+  // ---- Memory panel ----------------------------------------------------
+
+  const memoryListEl = document.getElementById("memory-list");
+  const memoryInput = document.getElementById("memory-input");
+  const memoryKind = document.getElementById("memory-kind");
+  const memoryMsg = document.getElementById("memory-msg");
+
+  function renderMemory(data) {
+    memoryListEl.innerHTML = "";
+    (data.lines || []).forEach(function (line) {
+      const li = el("li", "memory-item");
+      li.appendChild(el("span", null, line));
+      const b = el("button", "del-btn", "✕");
+      b.type = "button";
+      b.title = "Forget this";
+      b.addEventListener("click", async function () {
+        try {
+          const resp = await fetch("/api/memory/delete", {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ line: line }),
+          });
+          const d = await resp.json();
+          memoryMsg.textContent = d.result || "";
+          renderMemory(d);
+        } catch (e) { memoryMsg.textContent = "Delete failed."; }
+      });
+      li.appendChild(b);
+      memoryListEl.appendChild(li);
+    });
+    if (!memoryListEl.children.length) {
+      memoryListEl.appendChild(el("li", "muted", "Memory is empty."));
+    }
+  }
+
+  async function loadMemory() {
+    try {
+      const resp = await fetch("/api/memory");
+      renderMemory(await resp.json());
+    } catch (e) { /* panel stays empty */ }
+  }
+
+  document.getElementById("memory-add").addEventListener("click", async function () {
+    const fact = memoryInput.value.trim();
+    if (!fact) { memoryMsg.textContent = "Type something first."; return; }
+    try {
+      const resp = await fetch("/api/memory", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ fact: fact, kind: memoryKind.value }),
+      });
+      const d = await resp.json();
+      memoryMsg.textContent = d.result || d.error || "";
+      if (resp.ok) { memoryInput.value = ""; renderMemory(d); }
+    } catch (e) { memoryMsg.textContent = "Could not save."; }
+  });
+
+  // ---- Create-a-skill form ----------------------------------------------
+
+  document.getElementById("skill-create").addEventListener("click", async function () {
+    const msg = document.getElementById("skill-msg");
+    const payload = {
+      name: document.getElementById("skill-name").value.trim(),
+      description: document.getElementById("skill-desc").value.trim(),
+      instructions: document.getElementById("skill-instructions").value.trim(),
+    };
+    try {
+      const resp = await fetch("/api/skills", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(payload),
+      });
+      const d = await resp.json();
+      if (!resp.ok) { msg.textContent = d.error || "Could not save skill."; return; }
+      msg.textContent = "Saved skill: " + d.created.name;
+      document.getElementById("skill-name").value = "";
+      document.getElementById("skill-desc").value = "";
+      document.getElementById("skill-instructions").value = "";
+      loadSkills();
+    } catch (e) { msg.textContent = "Could not save skill."; }
+  });
+
+  // ---- Activity panel -----------------------------------------------------
+
+  async function loadActivity() {
+    const list = document.getElementById("activity-list");
+    try {
+      const resp = await fetch("/api/activity");
+      const data = await resp.json();
+      list.innerHTML = "";
+      (data.activity || []).forEach(function (a) {
+        const when = a.timestamp ? new Date(a.timestamp).toLocaleString() : "";
+        const li = el("li", "history-item");
+        li.appendChild(el("span", "history-meta", when + " — "));
+        li.appendChild(el("span", null, a.task || ""));
+        if (a.tools_used && a.tools_used.length) {
+          li.appendChild(el("span", "history-meta",
+            "  · tools: " + a.tools_used.join(", ")));
+        }
+        list.appendChild(li);
+      });
+      if (!list.children.length) {
+        list.appendChild(el("li", "muted", "No agent runs yet."));
+      }
+    } catch (e) { /* panel stays empty */ }
+  }
+
   checkHealth();
   loadBriefing();
+  loadCards();
+  loadIdeas();
+  loadMemory();
   loadSkills();
   loadHistory();
+  loadActivity();
 })();

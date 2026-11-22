@@ -91,6 +91,41 @@ def summary_for_prompt(limit: int = 15) -> str:
     return "\n".join(f"- {ln}" for ln in lines)
 
 
+def forget(line: str) -> str:
+    """Remove ONE entry given its display line from recall(), e.g.
+    'fact: X', 'preference: key = value', or 'preference: note text'."""
+    line = (line or "").strip()
+    if not line:
+        return "Nothing to forget."
+    data = _load()
+    if line.startswith("fact: "):
+        target = line[len("fact: "):]
+        facts = data.get("facts") or []
+        if target in facts:
+            facts.remove(target)
+            data["facts"] = facts
+            _save(data)
+            return f"Forgot (fact): {target}"
+        return f"Not in memory: {line}"
+    if line.startswith("preference: "):
+        rest = line[len("preference: "):]
+        prefs = data.setdefault("preferences", {})
+        if " = " in rest:
+            key = rest.split(" = ", 1)[0].strip()
+            if key in prefs:
+                del prefs[key]
+                _save(data)
+                return f"Forgot (preference): {key}"
+        notes = prefs.get("_notes") or []
+        if rest in notes:
+            notes.remove(rest)
+            prefs["_notes"] = notes
+            _save(data)
+            return f"Forgot (preference): {rest}"
+        return f"Not in memory: {line}"
+    return f"Unrecognised memory line: {line}"
+
+
 def clear() -> str:
     if MEMORY_PATH.exists():
         MEMORY_PATH.unlink()

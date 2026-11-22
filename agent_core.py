@@ -54,6 +54,9 @@ Reply with ONLY a single JSON object, no markdown fences, in one of these forms:
 {{"tool": "wikipedia", "query": "..."}}
 {{"tool": "calculate", "expression": "2*(3+4)"}}
 {{"tool": "currency", "amount": 100, "from": "USD", "to": "INR"}}
+{{"tool": "translate", "text": "...", "to": "ta"}}  (to = language code, source is English)
+{{"tool": "holidays", "country": "IN", "year": 2026}}  (both optional; next 5 upcoming)
+{{"tool": "define", "word": "..."}}
 {{"tool": "remember", "fact": "...", "kind": "fact|preference"}}
 {{"tool": "create_goal", "title": "...", "plan": "..."}}
 {{"tool": "update_goal", "id": "...", "status": "active|done|paused|cancelled", "note": "..."}}
@@ -204,6 +207,33 @@ def _run_tool(action: dict[str, Any], on_event: EventCallback) -> str:
                                         action.get("to") or "")
         except Exception as exc:
             return f"Currency conversion failed: {exc}"
+
+    if tool == "translate":
+        text = (action.get("text") or "").strip()
+        to_lang = (action.get("to") or "").strip()
+        on_event({"type": "tool", "tool": "translate", "query": text[:60]})
+        try:
+            return tools_extra.translate_text(text, to_lang)
+        except Exception as exc:
+            return f"Translate failed: {exc}"
+
+    if tool == "holidays":
+        country = (action.get("country") or "IN").strip()
+        year = action.get("year")
+        on_event({"type": "tool", "tool": "holidays", "query": country})
+        try:
+            return tools_extra.holidays_list(
+                country, int(year) if year else None)
+        except Exception as exc:
+            return f"Holidays lookup failed: {exc}"
+
+    if tool == "define":
+        word = (action.get("word") or "").strip()
+        on_event({"type": "tool", "tool": "define", "query": word})
+        try:
+            return tools_extra.define_word(word)
+        except Exception as exc:
+            return f"Define failed: {exc}"
 
     if tool == "create_reminder":
         text = (action.get("text") or "").strip()

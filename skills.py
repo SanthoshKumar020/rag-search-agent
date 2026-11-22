@@ -15,6 +15,7 @@ the full record including `instructions` (the markdown body).
 """
 from __future__ import annotations
 
+import re
 from pathlib import Path
 from typing import Any
 
@@ -22,6 +23,8 @@ import config
 
 SKILLS_DIR = config.BASE_DIR / "skills"
 MAX_INSTRUCTIONS = 6000  # keep the agent's context bounded
+MAX_NEW_INSTRUCTIONS = 4000  # cap for user-created skills (save-a-skill)
+_SLUG_RE = re.compile(r"^[a-z0-9][a-z0-9-]*$")
 
 
 def _parse(text: str, fallback_name: str) -> dict[str, Any]:
@@ -55,6 +58,36 @@ def list_skills() -> list[dict[str, str]]:
             continue
         out.append({"name": rec["name"], "description": rec["description"]})
     return out
+
+
+def create_skill(name: str, description: str,
+                 instructions: str) -> dict[str, str]:
+    """Write a new skills/<slug>.md (human-approved save-a-skill).
+
+    Raises ValueError on an invalid slug or oversized instructions,
+    OSError when the skills directory is not writable (hosted server).
+    """
+    slug = (name or "").strip().lower()
+    if not _SLUG_RE.match(slug):
+        raise ValueError(
+            "Skill name must be a slug: lowercase letters, digits, dashes "
+            "(e.g. 'cover-letter').")
+    instructions = (instructions or "").strip()
+    if not instructions:
+        raise ValueError("Skill instructions are required.")
+    if len(instructions) > MAX_NEW_INSTRUCTIONS:
+        raise ValueError(
+            f"Instructions too long ({len(instructions)} chars; "
+            f"max {MAX_NEW_INSTRUCTIONS}).")
+    description = " ".join((description or "").split())[:200]
+    SKILLS_DIR.mkdir(parents=True, exist_ok=True)
+    path = SKILLS_DIR / f"{slug}.md"
+    path.write_text(
+        f"---\nname: {slug}\ndescription: {description}\n---\n\n"
+        f"# Skill: {slug}\n\n{instructions}\n",
+        encoding="utf-8",
+    )
+    return {"name": slug, "description": description}
 
 
 def load_skill(name: str) -> dict[str, Any] | None:

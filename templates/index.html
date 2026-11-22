@@ -19,6 +19,12 @@
       <div id="briefing-body"><p class="muted">Loading briefing…</p></div>
     </section>
 
+    <section id="cards" class="cards-row">
+      <div class="mini-card" id="card-weather"><p class="muted">🌡️ Loading…</p></div>
+      <div class="mini-card" id="card-fx"><p class="muted">💱 Loading…</p></div>
+      <div class="mini-card" id="card-news"><p class="muted">📰 Loading…</p></div>
+    </section>
+
     <section class="card">
       <div class="modes" role="radiogroup" aria-label="Mode">
         <label>
@@ -41,6 +47,10 @@
 
       <textarea id="query" rows="4"
         placeholder="e.g. What is Delta Lake medallion architecture?"></textarea>
+      <div class="voice-row">
+        <button id="mic" type="button" class="small-btn">🎤 Speak</button>
+        <span id="voice-status" class="muted"></span>
+      </div>
 
       <div class="row">
         <label class="toggle" id="web-toggle-wrap">
@@ -100,7 +110,10 @@
     </section>
 
     <section id="result" class="card hidden">
-      <h2 id="result-title">Answer</h2>
+      <div class="result-head">
+        <h2 id="result-title">Answer</h2>
+        <button id="listen" type="button" class="small-btn hidden">🔊 Listen</button>
+      </div>
       <p id="note" class="note hidden"></p>
       <div id="answer" class="answer"></div>
       <h3 id="sources-heading">Sources</h3>
@@ -111,15 +124,49 @@
       </details>
     </section>
 
+    <section id="ideas-panel" class="card">
+      <h2 class="panel-title">💡 Ideas for today</h2>
+      <ul id="ideas-list" class="ideas-list"></ul>
+    </section>
+
+    <section id="memory-panel" class="card">
+      <h2 class="panel-title">🧠 Memory</h2>
+      <ul id="memory-list" class="memory-list"></ul>
+      <div class="row">
+        <input id="memory-input" type="text"
+          placeholder="Add a fact or preference… e.g. city: Chennai">
+        <select id="memory-kind">
+          <option value="fact">fact</option>
+          <option value="preference">preference</option>
+        </select>
+        <button id="memory-add" type="button">Remember</button>
+      </div>
+      <p id="memory-msg" class="muted"></p>
+    </section>
+
     <section id="skills-panel" class="card">
       <h2 class="panel-title">🧩 Skills</h2>
       <ul id="skills-list" class="skills-list"></ul>
       <p class="muted">In Agent mode, try: <em>“Use the interview-prep skill for Databricks questions.”</em></p>
+      <details class="create-skill">
+        <summary>➕ Create a skill</summary>
+        <input id="skill-name" type="text" placeholder="skill-name (lowercase slug, e.g. cover-letter)">
+        <input id="skill-desc" type="text" placeholder="One-line description">
+        <textarea id="skill-instructions" rows="4"
+          placeholder="Instructions the agent should follow when this skill is active…"></textarea>
+        <button id="skill-create" type="button">Save skill</button>
+        <p id="skill-msg" class="muted"></p>
+      </details>
     </section>
 
     <details id="history-panel" class="card">
       <summary>🕘 History</summary>
       <ul id="history-list" class="history-list"></ul>
+    </details>
+
+    <details id="activity-panel" class="card">
+      <summary>📜 Activity</summary>
+      <ul id="activity-list" class="history-list"></ul>
     </details>
 
     <footer>

@@ -9,11 +9,14 @@ import threading
 from flask import (Flask, Response, jsonify, render_template, request,
                    stream_with_context)
 
+import activity
 import agent as pipeline
 import briefing
 import config
 import history
+import memory
 import skills
+import tools_extra
 from llm import generate
 
 app = Flask(__name__)
@@ -53,6 +56,15 @@ def _record(mode: str, query: str, answer: str, sources=None) -> None:
         history.add_entry(mode, query, answer, sources or [])
     except Exception:
         pass  # history is best-effort; never break a query over it
+
+
+def _record_activity(task: str, result: dict | None) -> None:
+    try:
+        result = result or {}
+        activity.add_entry(task, result.get("tools_used") or [],
+                           result.get("answer") or "")
+    except Exception:
+        pass  # activity log is best-effort
 
 
 def _run_with_steps(fn, *args):
@@ -142,6 +154,163 @@ def api_briefing():
 @app.get("/api/history")
 def api_history():
     return jsonify({"history": history.list_history()})
+
+
+def _memory_payload():
+    data = memory.export() or {}
+    return {
+        "facts": data.get("facts") or [],
+        "preferences": data.get("preferences") or {},
+        "lines": memory.recall("", limit=100),
+    }
+
+
+@app.get("/api/memory")
+def api_memory_get():
+    return jsonify(_memory_payload())
+
+
+@app.post("/api/memory")
+def api_memory_add():
+    data = request.get_json(silent=True) or {}
+    fact = (data.get("fact") or "").strip()
+    kind = (data.get("kind") or "fact").strip()
+    if kind not in ("fact", "preference"):
+        kind = "fact"
+    if not fact:
+        return jsonify({"error": "Please enter a fact to remember."}), 400
+    result = memory.remember(fact, kind=kind)
+    return jsonify({"result": result, **_memory_payload()})
+
+
+@app.post("/api/memory/delete")
+def api_memory_delete():
+    data = request.get_json(silent=True) or {}
+    line = (data.get("line") or "").strip()
+    if not line:
+        return jsonify({"error": "Missing memory line to delete."}), 400
+    result = memory.forget(line)
+    return jsonify({"result": result, **_memory_payload()})
+
+
+@app.post("/api/memory/clear")
+def api_memory_clear():
+    result = memory.clear()
+    return jsonify({"result": result, **_memory_payload()})
+
+
+@app.post("/api/skills")
+def api_skills_create():
+    data = request.get_json(silent=True) or {}
+    try:
+        created = skills.create_skill(
+            data.get("name") or "",
+            data.get("description") or "",
+            data.get("instructions") or "",
+        )
+    except ValueError as exc:
+        return jsonify({"error": str(exc)}), 400
+    except OSError:
+        return jsonify({
+            "error": ("This hosted server's filesystem is read-only — "
+                      "skills can only be created when running the app "
+                      "locally on your own computer."),
+            "error_code": "skills_readonly_hosted",
+        }), 501
+    return jsonify({"created": created, "skills": skills.list_skills()})
+
+
+def _rule_based_ideas() -> list[str]:
+    import goals as goals_mod
+    import reminders as reminders_mod
+
+    ideas: list[str] = []
+    for r in reminders_mod.due_today_or_overdue():
+        ideas.append(
+            f"Help me prepare for '{r['text']}' (due {r['due']}): "
+            "make a short, concrete plan and save it as an artifact.")
+    for g in goals_mod.list_goals("active")[:2]:
+        ideas.append(
+            f"Advance my goal '{g['title']}': research the next concrete "
+            "step, do what you can with your tools, and note progress "
+            "on the goal.")
+    city = briefing._user_city()
+    ideas.append(f"Use the daily-briefing skill and brief me for today "
+                 f"in {city}.")
+    facts = (memory.export() or {}).get("facts") or []
+    if facts:
+        ideas.append(
+            f"I remember this about me: '{facts[-1]}'. Suggest one useful "
+            "action for today based on it and create a reminder.")
+    ideas.append(
+        "Check today's data-engineering headlines and job-market news, "
+        "and summarise anything relevant to my job hunt.")
+    ideas.append(
+        "Use the interview-prep skill: give me 3 tough SQL window-function "
+        "questions with model answers.")
+    return ideas[:4]
+
+
+def _ideas_today() -> tuple[list[str], str]:
+    """Ideas for today (IST), cached per calendar day in DATA_DIR."""
+    from datetime import datetime, timezone
+
+    today = (datetime.now(timezone.utc)
+             .astimezone(tools_extra.IST).date().isoformat())
+    cache_path = config.DATA_DIR / "ideas.json"
+    try:
+        cached = json.loads(cache_path.read_text(encoding="utf-8"))
+        if cached.get("date") == today and cached.get("ideas"):
+            return cached["ideas"], today
+    except Exception:
+        pass
+    ideas = _rule_based_ideas()
+    # Optional one-call LLM polish; silently keep the templates on failure.
+    if config.llm_backend() != "none":
+        try:
+            polished = generate(
+                "You polish short task suggestions for a personal AI "
+                "agent. Reply with ONLY the polished suggestions, one "
+                "per line, no numbering, keeping each under 200 chars.",
+                "Polish these task suggestions:\n" + "\n".join(ideas),
+            )
+            lines = [ln.strip(" -•") for ln in (polished or "").splitlines()
+                     if ln.strip()]
+            if len(lines) >= 3:
+                ideas = lines[:4]
+        except Exception:
+            pass
+    try:
+        cache_path.parent.mkdir(parents=True, exist_ok=True)
+        cache_path.write_text(
+            json.dumps({"date": today, "ideas": ideas},
+                       indent=2, ensure_ascii=False) + "\n",
+            encoding="utf-8")
+    except Exception:
+        pass
+    return ideas, today
+
+
+@app.get("/api/ideas")
+def api_ideas():
+    ideas, today = _ideas_today()
+    return jsonify({"ideas": ideas, "date": today})
+
+
+@app.get("/api/cards")
+def api_cards():
+    city = briefing._user_city()
+    return jsonify({
+        "city": city,
+        "weather": tools_extra.weather_data(city),
+        "fx": tools_extra.currency_data("USD", "INR"),
+        "headlines": tools_extra.news_items("", 3),
+    })
+
+
+@app.get("/api/activity")
+def api_activity():
+    return jsonify({"activity": activity.list_activity()})
 
 
 @app.post("/api/query")
@@ -244,6 +413,7 @@ def _agent_oneshot(task: str):
             "error": f"Agent failed: {exc}",
         }), 502
     _record("agent", task, result.get("answer") or "", [])
+    _record_activity(task, result)
     return jsonify({
         "answer": result.get("answer") or "",
         "sources": [],
@@ -434,6 +604,7 @@ def _agent_stream(task: str, sse):
 
         result = outcome.get("result") or {}
         _record("agent", task, result.get("answer") or "", [])
+        _record_activity(task, result)
         yield sse({
             "type": "answer",
             "text": result.get("answer") or "",

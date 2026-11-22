@@ -28,6 +28,13 @@ Everything runs on **free tiers** (Groq / HuggingFace). With no API keys it stil
 - **History** — every web run is saved (mode, query, answer, sources) and listed in the History panel; click one to restore it (`GET /api/history`).
 - **Model picker** — the web UI can switch ask/reply between GPT-OSS 120B (default), GPT-OSS 20B (fast), and Qwen 3.8 27B. Agent mode keeps its own tuned model (`AGENT_MODEL`).
 - **Browse on hosted servers** — instead of a raw library error, the web UI explains up front that Browse needs a local Chromium and how to run it on your own computer.
+- **More keyless tools (wave 2)** — `translate` (MyMemory), `holidays` (Nager.Date — note: it does not cover India), `define` (Free Dictionary API).
+- **🧠 Editable memory UI** — view, add, and delete memory entries from the web panel (`/api/memory`).
+- **🎤 Voice** — speak your query (Web Speech API, en-IN) and listen to answers read aloud (speechSynthesis). Client-side only, no keys.
+- **💡 Ideas panel** — 4 proactive task suggestions generated from your goals, reminders, memory, and briefing, cached per day; one click loads one into Agent mode.
+- **Live cards** — weather, USD→INR rate, and top headlines in a card row under the briefing (`/api/cards`).
+- **Save-a-skill** — create your own skill from the Skills panel form (slug-validated, 4000-char cap). On hosted read-only servers this returns a clear "run locally" message.
+- **📜 Activity log** — every agent-mode run (task, tools used, answer preview) is logged and shown in the Activity panel (`/api/activity`).
 
 ## Quick start
 
@@ -114,6 +121,7 @@ On Vercel, Ask/Reply work; Browse and heavy Agent tools that need Chromium stay 
 | `tools_extra.py` | Keyless tools: datetime, weather, news, Wikipedia, calculator, currency |
 | `briefing.py` | Morning briefing assembly (`/api/briefing`) |
 | `history.py` | Web chat history (`/api/history`) |
+| `activity.py` | Agent-run activity log (`/api/activity`) |
 | `browser_agent.py` | Optional Chromium agent |
 | `search.py` / `fetch.py` / `embed.py` / `index_store.py` / `llm.py` | RAG pipeline |
 | `web_app.py` | Flask UI + SSE |

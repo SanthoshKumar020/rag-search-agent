@@ -322,6 +322,13 @@ def cmd_agent(args) -> int:
     result = agent_core.run_agent(
         task, max_steps=args.max_steps, on_event=_cli_event
     )
+    try:
+        import activity
+
+        activity.add_entry(task, result.get("tools_used") or [],
+                           result.get("answer") or "")
+    except Exception:
+        pass  # activity log is best-effort
     print("\n--- Agent result ---\n")
     print(result.get("answer") or "")
     if result.get("steps"):

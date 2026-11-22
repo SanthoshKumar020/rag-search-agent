@@ -128,7 +128,8 @@ def weather(city: str) -> str:
 # ----------------------------------------------------------------------
 # news (RSS, no key)
 # ----------------------------------------------------------------------
-def news(topic: str = "", limit: int = 6) -> str:
+def news_items(topic: str = "", limit: int = 6) -> list[dict[str, str]]:
+    """Structured headlines [{title, link, source}]; [] on failure."""
     topic = (topic or "").strip()
     if topic:
         url = ("https://news.google.com/rss/search?q="
@@ -139,8 +140,8 @@ def news(topic: str = "", limit: int = 6) -> str:
         resp = requests.get(url, headers=UA, timeout=TIMEOUT)
         resp.raise_for_status()
         root = ET.fromstring(resp.content)
-    except Exception as exc:
-        return f"Could not fetch news right now ({exc})."
+    except Exception:
+        return []
     items = []
     for item in root.iter("item"):
         title = (item.findtext("title") or "").strip()
@@ -153,8 +154,14 @@ def news(topic: str = "", limit: int = 6) -> str:
             items.append({"title": title, "link": link, "source": source})
         if len(items) >= limit:
             break
+    return items
+
+
+def news(topic: str = "", limit: int = 6) -> str:
+    topic = (topic or "").strip()
+    items = news_items(topic, limit)
     if not items:
-        return "No headlines found."
+        return "Could not fetch headlines right now, or none were found."
     lines = [f"Top headlines{' for ' + topic if topic else ''}:"]
     for i, it in enumerate(items, 1):
         src = f" ({it['source']})" if it["source"] else ""
@@ -261,6 +268,26 @@ def calculate_value(expression: str) -> float:
 # ----------------------------------------------------------------------
 # currency (open.er-api.com, no key)
 # ----------------------------------------------------------------------
+def currency_data(from_ccy: str, to_ccy: str) -> dict[str, Any] | None:
+    """Structured rate dict {from, to, rate, updated} or None."""
+    src = (from_ccy or "").strip().upper()
+    dst = (to_ccy or "").strip().upper()
+    if len(src) != 3 or len(dst) != 3:
+        return None
+    try:
+        resp = requests.get(f"https://open.er-api.com/v6/latest/{src}",
+                            headers=UA, timeout=TIMEOUT)
+        resp.raise_for_status()
+        data = resp.json() or {}
+    except Exception:
+        return None
+    rates = data.get("rates") or {}
+    if data.get("result") != "success" or dst not in rates:
+        return None
+    return {"from": src, "to": dst, "rate": rates[dst],
+            "updated": data.get("time_last_update_utc") or ""}
+
+
 def currency(amount: Any, from_ccy: str, to_ccy: str) -> str:
     try:
         amt = float(amount)
@@ -285,3 +312,117 @@ def currency(amount: Any, from_ccy: str, to_ccy: str) -> str:
     updated = data.get("time_last_update_utc") or "unknown date"
     return (f"{amt:g} {src} = {converted:,.2f} {dst} "
             f"(rate 1 {src} = {rate} {dst}, updated {updated})")
+
+
+# ----------------------------------------------------------------------
+# translate (MyMemory, no key) — source language defaults to English
+# ----------------------------------------------------------------------
+def translate_text(text: str, to_lang: str, from_lang: str = "en") -> str:
+    text = (text or "").strip()
+    to_lang = (to_lang or "").strip().lower()
+    if not text:
+        return "Please provide text to translate."
+    if not to_lang:
+        return "Please provide a target language code, e.g. ta, hi, es, fr."
+    try:
+        resp = requests.get(
+            "https://api.mymemory.translated.net/get",
+            params={"q": text[:450], "langpair": f"{from_lang}|{to_lang}"},
+            headers=UA, timeout=TIMEOUT,
+        )
+        resp.raise_for_status()
+        data = resp.json() or {}
+    except Exception as exc:
+        return f"Could not translate right now ({exc})."
+    translated = ((data.get("responseData") or {}).get("translatedText")
+                  or "").strip()
+    if not translated or data.get("responseStatus") not in (200, "200", None):
+        return f"Translation to '{to_lang}' failed or is unavailable."
+    return f"{text}\n→ ({to_lang}) {translated}"
+
+
+# ----------------------------------------------------------------------
+# public holidays (Nager.Date, no key)
+# ----------------------------------------------------------------------
+def holidays_list(country: str = "IN", year: int | None = None,
+                  limit: int = 5) -> str:
+    country = (country or "IN").strip().upper()
+    today = datetime.now(timezone.utc).date()
+    year = year or today.year
+    try:
+        resp = requests.get(
+            f"https://date.nager.at/api/v3/PublicHolidays/{year}/{country}",
+            headers=UA, timeout=TIMEOUT,
+        )
+        if resp.status_code == 404:
+            return f"No holiday data for country '{country}'."
+        resp.raise_for_status()
+        if resp.status_code == 204 or not (resp.content or b"").strip():
+            # Nager.Date returns 204 for countries it does not cover
+            # (India included) — say so plainly instead of a parse error.
+            return (f"Nager.Date has no public-holiday data for "
+                    f"'{country}' (it does not cover this country).")
+        rows = resp.json() or []
+    except Exception as exc:
+        return f"Could not fetch holidays right now ({exc})."
+    upcoming = []
+    for row in rows:
+        d = (row.get("date") or "")
+        try:
+            hd = datetime.fromisoformat(d).date()
+        except ValueError:
+            continue
+        if year == today.year and hd < today:
+            continue
+        upcoming.append((hd, row.get("name") or "", row.get("localName") or ""))
+    upcoming.sort(key=lambda x: x[0])
+    if not upcoming:
+        return f"No upcoming holidays found for {country} in {year}."
+    lines = [f"Next public holidays in {country} ({year}):"]
+    for hd, name, local in upcoming[:limit]:
+        extra = f" ({local})" if local and local != name else ""
+        lines.append(f"- {hd.isoformat()}: {name}{extra}")
+    return "\n".join(lines)
+
+
+# ----------------------------------------------------------------------
+# dictionary (Free Dictionary API, no key)
+# ----------------------------------------------------------------------
+def define_word(word: str) -> str:
+    word = (word or "").strip()
+    if not word:
+        return "Please provide a word to define."
+    try:
+        resp = requests.get(
+            "https://api.dictionaryapi.dev/api/v2/entries/en/"
+            + quote_plus(word.lower()),
+            headers=UA, timeout=TIMEOUT,
+        )
+        if resp.status_code == 404:
+            return f"No dictionary entry found for '{word}'."
+        resp.raise_for_status()
+        entries = resp.json() or []
+    except Exception as exc:
+        return f"Could not fetch a definition right now ({exc})."
+    if not entries:
+        return f"No dictionary entry found for '{word}'."
+    entry = entries[0]
+    phonetic = entry.get("phonetic") or ""
+    lines = [f"{entry.get('word') or word}"
+             + (f" {phonetic}" if phonetic else "")]
+    count = 0
+    for meaning in entry.get("meanings") or []:
+        pos = meaning.get("partOfSpeech") or ""
+        for d in meaning.get("definitions") or []:
+            definition = (d.get("definition") or "").strip()
+            if not definition:
+                continue
+            lines.append(f"- ({pos}) {definition}")
+            count += 1
+            if count >= 3:
+                break
+        if count >= 3:
+            break
+    if count == 0:
+        return f"No definitions found for '{word}'."
+    return "\n".join(lines)
