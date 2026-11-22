@@ -1,0 +1,7 @@
+ddgs>=9.0
+requests>=2.32
+beautifulsoup4>=4.12
+numpy>=1.26
+scikit-learn>=1.4
+python-dotenv>=1.0
+pypdf>=4.0
