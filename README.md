@@ -1,33 +1,22 @@
-# Search + RAG Reply Agent
+# Search + RAG + Personal Agent
 
-A small Python agent that **searches the live web, reads the top pages,
-and answers questions — or drafts replies — grounded in what it actually
-found**, with sources cited. It can also index your own documents and
-answer questions from them.
+A Python agent that **searches the live web, reads pages, and answers or drafts replies grounded in sources** — plus a **Muse-inspired personal agent** with memory, goals, artifacts, and optional real-browser control.
 
-**New:** optional **Browse mode** drives a real Chromium (via
-[browser-use](https://github.com/browser-use/browser-use)) so you can say
-things like *“open BookMyShow and book a movie”* and the agent will click,
-type and navigate on its own — stopping before any payment.
+Everything runs on **free tiers** (Groq / HuggingFace). With no API keys it still searches and shows evidence.
 
-Everything runs on **free tiers**. With no API keys at all it still
-works: it searches, retrieves evidence and prints it (embeddings fall
-back to local TF-IDF). Add a free Groq or HuggingFace key and it writes
-full answers and ready-to-send replies.
+> **Honest note:** This is *inspired by* Meta Muse, not a clone. Muse has a private cloud VM, payment rails, WhatsApp, glasses, and deep OAuth connectors. This project keeps the useful agent ideas that work on a laptop with free APIs: tool loop, memory, goals, artifacts, and browser automation.
 
-## Use cases
+## What you get
 
-- **Research answers with sources** — `ask` a question and get a
-  grounded answer with numbered citations instead of a model's guess.
-- **Drafting grounded replies** — paste a question, email or message
-  into `reply` and get a polite, ready-to-send draft based on retrieved
-  evidence, with the sources listed separately so you can verify before
-  sending. The agent never invents facts to fill gaps.
-- **Q&A over your own documents** — `add` your notes, docs or PDFs once,
-  then `ask --local` answers from them offline.
-- **Autonomous browser tasks** — `browse` opens a real browser and follows
-  multi-step instructions (forms, ticket selection, research sites…).
-  Always stops before payment.
+| Mode | What it does |
+|------|----------------|
+| **Ask** | Grounded Q&A with citations |
+| **Reply** | Draft emails/messages from web evidence |
+| **Browse** | Real Chromium via browser-use (local) |
+| **Agent** | Multi-step tool loop: search → fetch → remember → goals → save docs |
+| **Memory** | Persistent facts & preferences |
+| **Goals** | Long-running objectives across sessions |
+| **Artifacts** | Saved documents/code the agent produces |
 
 ## Quick start
 
@@ -36,148 +25,93 @@ git clone https://github.com/SanthoshKumar020/rag-search-agent.git
 cd rag-search-agent
 python3 -m venv venv && source venv/bin/activate
 pip install -r requirements.txt
-cp .env.example .env   # add at least one free key (see below)
+cp .env.example .env   # add GROQ_API_KEY (recommended)
 ```
 
 ```bash
 python agent.py ask "What is Delta Lake medallion architecture?"
-python agent.py reply "Hi, can you explain your refund policy for annual plans?"
-python agent.py add ~/notes/project-docs/
+python agent.py reply "Hi, can you explain your refund policy?"
+python agent.py add ~/notes/
 python agent.py ask --local "What did we decide about the schema?"
 ```
 
-### Optional: autonomous browser (Browse mode)
+### Muse-inspired personal agent
 
 ```bash
-pip install 'browser-use==1.0.8'   # downloads Chromium on first run
-python agent.py browse "Open BookMyShow, search for [movie name], pick the earliest show in [city] today, select 2 seats, and STOP before payment. Summarise what you selected."
-# Add --show to watch the browser window
+# Multi-step agent (search, memory, goals, artifacts)
+python agent.py agent "Research the top 3 open-source vector DBs and save a comparison markdown"
+
+# Memory
+python agent.py memory add "I prefer concise answers" --kind preference
+python agent.py memory list
+
+# Goals
+python agent.py goals add "Ship RAG agent v2" --plan "browser + memory + UI"
+python agent.py goals list
+python agent.py goals done <id>
+
+# Artifacts the agent saved
+python agent.py artifacts list
+python agent.py artifacts show <id>
 ```
 
-## Web app (Vercel)
+### Optional real browser
 
-The same pipeline is available as a small web app (`web_app.py`): a
-chat-style page where you type a question or paste a message, pick
-**Ask** / **Reply** / **Browse**, toggle web search on/off, and get the
-answer plus its sources. The web index is built in memory per request —
-nothing is written to disk, so it runs fine on serverless hosting.
+```bash
+pip install 'browser-use==1.0.8'
+python agent.py browse "Open example.com and tell me the page title"
+# --show to watch the window
+```
 
-The page includes a **Live browser** panel: while a query runs, the
-agent's browsing streams to the page in real time (via the
-Server-Sent Events endpoint `POST /api/query/stream`) — you watch the
-search query, each page being opened and read (chars read, chunks
-taken, or why it was skipped), the indexing total, and which sources
-were finally used as evidence, before the answer appears. If streaming
-is unavailable, the UI falls back to the one-shot `POST /api/query`
-endpoint automatically.
-
-**Browse mode** is supported in the UI but only works when the server
-has a real Chromium (i.e. running locally). On pure serverless (Vercel)
-it returns a clear message and points you to the CLI.
-
-**Deploy on Vercel:**
-
-1. Import this repo in Vercel (New Project → Import Git Repository).
-   `vercel.json` and `api/index.py` are already configured — no build
-   settings to change.
-2. In the project's **Settings → Environment Variables**, add
-   `GROQ_API_KEY` (and optionally `HF_TOKEN`). Keys are read only from
-   the environment at runtime; never commit them to the repo.
-3. Deploy. Every `git push` to `main` redeploys automatically.
-
-Without any key set, the web app still works — it returns the retrieved
-evidence instead of a generated answer, exactly like the CLI.
-
-Run it locally the same way as the CLI environment:
+## Web UI
 
 ```bash
 python web_app.py   # http://127.0.0.1:5000
 ```
 
-The CLI (`agent.py ask / reply / add / browse`) works exactly as before and is
-unaffected by the web app.
+Modes: **Ask** / **Reply** / **Browse** / **Agent**. Live step streaming via SSE.
 
-## Free API keys (optional but recommended)
+On Vercel, Ask/Reply work; Browse and heavy Agent tools that need Chromium stay local.
 
-| Key | Used for | Get it free |
-| --- | -------- | ----------- |
-| `GROQ_API_KEY` | Answer/reply generation + browser agent (Groq, default model `openai/gpt-oss-120b`; override with `GROQ_MODEL`) | https://console.groq.com |
-| `HF_TOKEN` | Semantic embeddings (all-MiniLM-L6-v2) + fallback chat model | https://huggingface.co/settings/tokens |
+## Muse vs this project
 
-Put them in `.env` (see `.env.example`). Behaviour by configuration:
+| Capability | Meta Muse | This repo |
+|------------|-----------|-----------|
+| Chat + research | Yes | Yes (ask / agent) |
+| Multi-step tool use | Yes | Yes (`agent`) |
+| Web browser control | Yes (cloud VM) | Yes (local browser-use) |
+| Persistent memory | Yes | Yes (`memory.py`) |
+| Long-running goals | Yes | Yes (`goals.py`) |
+| Artifacts / library | Yes | Yes (`artifacts.py`) |
+| Background always-on | Yes | No (run on demand) |
+| Payments / Stripe Link | Yes | No (refuses to pay) |
+| Email send / OAuth apps | Yes | No (local only) |
+| Private cloud VM | Yes | No |
+| WhatsApp / glasses | Yes | No |
 
-| Keys present | Embeddings | Generation |
-| ------------ | ---------- | ---------- |
-| Groq + HF | HuggingFace semantic | Groq |
-| Groq only | TF-IDF (local) | Groq |
-| HF only | HuggingFace semantic | HF chat model |
-| none | TF-IDF (local) | prints retrieved evidence |
-
-## How it works
-
-```
- question / message
-        |
-        v
- [1] SEARCH    DuckDuckGo (ddgs) -> DDG lite -> SearXNG -> Bing
-        |      first transport that returns results wins
-        v
- [2] FETCH     requests + BeautifulSoup strip boilerplate -> page text
-        |
-        v
- [3] CHUNK     ~800-char chunks, 120-char overlap
-        |
-        v
- [4] EMBED     HuggingFace all-MiniLM-L6-v2  (or TF-IDF fallback)
-        |
-        v
- [5] RETRIEVE  numpy cosine similarity, top 5 chunks
-        |
-        v
- [6] GENERATE  Groq gpt-oss-120b (or HF chat) writes the answer /
-               reply with inline [n] citations + a Sources list
-```
-
-For local documents the same chunk/embed/retrieve steps run over a
-persistent on-disk index (`index/vectors.npz` + `index/chunks.json`).
-
-**Browse mode** instead hands the natural-language task to a
-[browser-use](https://github.com/browser-use/browser-use) Agent that
-controls a real Chromium via CDP, with a hard safety rule baked in:
-never submit payment.
-
-### Modules
+## Modules
 
 | File | Role |
-| ---- | ---- |
-| `agent.py` | CLI (`ask` / `reply` / `add` / `browse`) and pipeline orchestration |
-| `browser_agent.py` | Optional autonomous browser agent (browser-use) |
-| `search.py` | Web search transport chain (DuckDuckGo first) |
-| `fetch.py` | Page fetching, text extraction, chunking |
-| `embed.py` | HuggingFace embeddings with TF-IDF fallback |
-| `index_store.py` | Persistent numpy vector index + retrieval |
-| `llm.py` | Groq / HuggingFace generation |
-| `config.py` | Keys, model names, tuning constants |
-| `web_app.py` | Flask web UI (`/` page, `POST /api/query`, and the SSE `POST /api/query/stream` live-browsing endpoint) over the same pipeline |
-| `api/index.py` | Vercel serverless entrypoint (imports the app from `web_app.py`) |
+|------|------|
+| `agent.py` | CLI |
+| `agent_core.py` | Tool-using personal agent loop |
+| `memory.py` | Facts & preferences |
+| `goals.py` | Goal tracker |
+| `artifacts.py` | Saved outputs |
+| `browser_agent.py` | Optional Chromium agent |
+| `search.py` / `fetch.py` / `embed.py` / `index_store.py` / `llm.py` | RAG pipeline |
+| `web_app.py` | Flask UI + SSE |
 
-## Honest limits
+## Free keys
 
-- **Free-tier rate limits** — Groq and HuggingFace free tiers throttle;
-  heavy use will hit 429s.
-- **Search quality varies** — results are only as good as the search
-  transport that answers. Search engines sometimes bot-wall datacenter
-  IPs (DuckDuckGo may return a challenge page), which is why several
-  fallback transports exist; on a residential connection DuckDuckGo via
-  `ddgs` normally answers first.
-- **Answers are only as good as the sources** — the agent grounds its
-  output in retrieved pages, but it cannot verify a source's truth.
-  Check the citations before acting on an answer.
-- **TF-IDF fallback is lexical** — without `HF_TOKEN`, retrieval matches
-  keywords rather than meaning, so phrasing matters more.
-- The local index's TF-IDF vocabulary is fixed by the first corpus added;
-  for a very different document set, delete `index/` and re-add.
-- **Browse mode** needs a real browser and is **not available on pure
-  serverless** (Vercel). CAPTCHAs, logins and aggressive anti-bot on
-  ticket sites can still block the agent; always review the result and
-  never let it spend money without your explicit OK.
+| Key | Use |
+|-----|-----|
+| `GROQ_API_KEY` | Generation + agent + browser (https://console.groq.com) |
+| `HF_TOKEN` | Embeddings + fallback chat (https://huggingface.co/settings/tokens) |
+
+## Limits
+
+- Free-tier rate limits apply.
+- Agent step count is capped (default 8) to control cost.
+- Browse needs local Chromium; not for pure serverless.
+- Never auto-pays or sends real email — by design.
