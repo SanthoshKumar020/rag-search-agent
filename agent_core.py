@@ -238,7 +238,11 @@ def run_agent(
             emit({"type": "agent_done", "answer": answer})
             return {"answer": answer, "steps": steps, "tools_used": tools_used}
 
-        observation = _run_tool(action, emit)
+        try:
+            observation = _run_tool(action, emit)
+        except Exception as exc:
+            # one failing tool (e.g. storage error) must not kill the run
+            observation = f"Tool {tool} failed: {exc}"
         transcript.append(f"Assistant tool call: {json.dumps(action, ensure_ascii=False)}")
         transcript.append(f"Observation: {observation[:3000]}")
         emit({"type": "tool_result", "tool": tool, "preview": observation[:400]})

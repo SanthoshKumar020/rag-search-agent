@@ -12,7 +12,7 @@ from typing import Any
 
 import config
 
-MEMORY_PATH = config.BASE_DIR / "data" / "memory.json"
+MEMORY_PATH = config.DATA_DIR / "memory.json"
 
 
 def _now() -> str:

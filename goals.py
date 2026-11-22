@@ -13,7 +13,7 @@ from typing import Any
 
 import config
 
-GOALS_PATH = config.BASE_DIR / "data" / "goals.json"
+GOALS_PATH = config.DATA_DIR / "goals.json"
 
 
 def _now() -> str:

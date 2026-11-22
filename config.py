@@ -17,6 +17,33 @@ HF_TOKEN = os.environ.get("HF_TOKEN", "").strip()
 INDEX_DIR = BASE_DIR / "index"
 KNOWLEDGE_DIR = BASE_DIR / "knowledge"
 
+
+def _resolve_data_dir() -> Path:
+    """Writable home for the agent's memory / goals / artifacts.
+
+    Locally this is <repo>/data. On read-only deployments (Vercel's
+    /var/task) fall back to the system temp dir — storage there is
+    ephemeral and resets when the server restarts. Override with
+    AGENT_DATA_DIR.
+    """
+    override = os.environ.get("AGENT_DATA_DIR", "").strip()
+    if override:
+        return Path(override)
+    candidate = BASE_DIR / "data"
+    try:
+        candidate.mkdir(parents=True, exist_ok=True)
+        probe = candidate / ".write-test"
+        probe.write_text("ok", encoding="utf-8")
+        probe.unlink()
+        return candidate
+    except OSError:
+        import tempfile
+
+        return Path(tempfile.gettempdir()) / "rag-search-agent-data"
+
+
+DATA_DIR = _resolve_data_dir()
+
 # Search / retrieval tuning
 SEARCH_RESULTS = 5          # web results to fetch per ask/reply
 CHUNK_SIZE = 800            # characters per chunk

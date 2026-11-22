@@ -14,7 +14,7 @@ from typing import Any
 
 import config
 
-ARTIFACTS_DIR = config.BASE_DIR / "data" / "artifacts"
+ARTIFACTS_DIR = config.DATA_DIR / "artifacts"
 INDEX_PATH = ARTIFACTS_DIR / "index.json"
 
 
@@ -64,7 +64,7 @@ def save(title: str, content: str, *, kind: str = "markdown") -> dict[str, Any]:
         "id": aid,
         "title": title,
         "kind": kind,
-        "path": str(path.relative_to(config.BASE_DIR)),
+        "path": filename,
         "chars": len(content),
         "created_at": _now(),
     }
@@ -81,7 +81,7 @@ def list_artifacts(limit: int = 20) -> list[dict[str, Any]]:
 def get(artifact_id: str) -> dict[str, Any] | None:
     for item in _load_index():
         if item.get("id") == artifact_id:
-            path = config.BASE_DIR / item["path"]
+            path = ARTIFACTS_DIR / Path(item["path"]).name
             if path.exists():
                 item = dict(item)
                 item["content"] = path.read_text(encoding="utf-8")
