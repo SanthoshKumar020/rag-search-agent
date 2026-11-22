@@ -33,41 +33,80 @@ def log(step: str) -> None:
 # ----------------------------------------------------------------------
 # Evidence gathering
 # ----------------------------------------------------------------------
-def web_evidence(query: str) -> list[dict]:
-    """Search the web, fetch top pages, chunk them, retrieve the best."""
+def _noop_event(event: dict) -> None:
+    """Default on_event callback: ignore progress events (CLI behaviour)."""
+
+
+def web_evidence(query: str, on_event=None) -> list[dict]:
+    """Search the web, fetch top pages, chunk them, retrieve the best.
+
+    `on_event` is an optional callback invoked with a progress-event
+    dict at each stage (search / results / fetch / fetched /
+    fetch_failed / indexed / retrieved) so callers such as the web UI
+    can render the agent's browsing live. The CLI passes nothing and
+    behaves exactly as before.
+    """
+    emit = on_event or _noop_event
     log(f"searching the web for: {query}")
+    emit({"type": "search", "query": query})
     results = web_search(query, max_results=config.SEARCH_RESULTS)
     log(f"search returned {len(results)} results")
+    emit({"type": "results",
+          "results": [{"title": r["title"], "url": r["url"]}
+                      for r in results]})
     chunks: list[dict] = []
     fetched = 0
     for r in results:
+        emit({"type": "fetch", "url": r["url"], "title": r["title"]})
         text = fetch_text(r["url"])
         if len(text) < MIN_TEXT:
+            reason = ("no readable text extracted"
+                      if not text else
+                      f"only {len(text)} chars of readable text "
+                      f"(minimum {MIN_TEXT})")
+            emit({"type": "fetch_failed", "url": r["url"],
+                  "title": r["title"], "reason": reason})
             continue
         fetched += 1
-        for piece in chunk_text(text, config.CHUNK_SIZE, config.CHUNK_OVERLAP):
+        pieces = chunk_text(text, config.CHUNK_SIZE, config.CHUNK_OVERLAP)
+        for piece in pieces:
             chunks.append(
                 {"text": piece, "source": r["url"], "title": r["title"]}
             )
+        emit({"type": "fetched", "url": r["url"], "title": r["title"],
+              "chars": len(text), "chunks": len(pieces)})
     log(f"fetched {fetched} pages, indexed {len(chunks)} chunks")
+    emit({"type": "indexed", "chunks": len(chunks), "pages": fetched})
     if not chunks:
+        emit({"type": "retrieved", "hits": []})
         return []
     store = IndexStore(embedder=Embedder())
     store.build_ephemeral(chunks)
     hits = store.search(query, top_k=config.TOP_K)
     log(f"retrieved {len(hits)} chunks")
+    emit({"type": "retrieved",
+          "hits": [{"title": h.get("title") or h["source"],
+                    "url": h["source"], "score": h["score"]}
+                   for h in hits]})
     return hits
 
 
-def local_evidence(query: str) -> list[dict]:
+def local_evidence(query: str, on_event=None) -> list[dict]:
+    emit = on_event or _noop_event
     store = IndexStore()
     if len(store) == 0:
         print("Local knowledge index is empty. Add documents first:\n"
               "  python agent.py add path/to/file-or-folder")
+        emit({"type": "retrieved", "hits": []})
         return []
     log(f"searching local index ({len(store)} chunks)")
+    emit({"type": "local", "chunks": len(store)})
     hits = store.search(query, top_k=config.TOP_K)
     log(f"retrieved {len(hits)} chunks")
+    emit({"type": "retrieved",
+          "hits": [{"title": h.get("title") or h["source"],
+                    "url": h["source"], "score": h["score"]}
+                   for h in hits]})
     return hits
 
 

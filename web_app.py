@@ -13,9 +13,12 @@ stored in code or in the repo.
 Run locally:  python web_app.py            (http://127.0.0.1:5000)
 On Vercel:    api/index.py imports `app` from here.
 """
+import json
+import queue
 import threading
 
-from flask import Flask, jsonify, render_template, request
+from flask import (Flask, Response, jsonify, render_template, request,
+                   stream_with_context)
 
 import agent as pipeline
 import config
@@ -167,6 +170,125 @@ def query():
         "steps": steps,
         "evidence_only": False,
     })
+
+
+def _prompts(mode: str, text: str, hits: list[dict]):
+    """Build (system, user) generation prompts for ask/reply modes."""
+    evidence = pipeline.evidence_block(hits, pipeline.format_sources(hits))
+    if mode == "ask":
+        return ASK_SYSTEM, (f"Question: {text}\n\nEvidence:\n{evidence}"
+                            "\n\nWrite the answer with inline citations.")
+    return REPLY_SYSTEM, (f"Incoming message to reply to:\n{text}\n\n"
+                          f"Evidence:\n{evidence}\n\nDraft the reply.")
+
+
+@app.post("/api/query/stream")
+def query_stream():
+    """Server-Sent Events version of /api/query.
+
+    Emits one JSON event per line (`data: {...}`) as the pipeline
+    actually progresses — search, per-page fetch/fetched, indexed,
+    retrieved, answer, done — so the UI can render the agent's
+    browsing live. The evidence stage runs in a worker thread; its
+    on_event callbacks are forwarded through a queue to this
+    generator, which is what makes the events arrive incrementally
+    instead of all at once at the end.
+    """
+    data = request.get_json(silent=True) or {}
+    text = (data.get("query") or "").strip()
+    mode = (data.get("mode") or "ask").lower()
+    use_web = data.get("use_web", True)
+    if mode not in ("ask", "reply"):
+        mode = "ask"
+    if not text:
+        return jsonify({"error": "Please enter a question or message."}), 400
+
+    def sse(event: dict) -> str:
+        return f"data: {json.dumps(event)}\n\n"
+
+    def gen():
+        events: queue.Queue = queue.Queue()
+        outcome: dict = {}
+
+        def worker():
+            steps: list[str] = []
+            try:
+                with _pipeline_lock:
+                    original_log = pipeline.log
+                    pipeline.log = steps.append
+                    try:
+                        if use_web:
+                            search_text = (
+                                text if mode == "ask"
+                                else pipeline.reply_search_query(text))
+                            hits = pipeline.web_evidence(
+                                search_text, on_event=events.put)
+                        else:
+                            hits = pipeline.local_evidence(
+                                text, on_event=events.put)
+                    finally:
+                        pipeline.log = original_log
+                outcome["hits"] = hits
+                outcome["steps"] = steps
+            except Exception as exc:  # search/fetch backends can fail
+                outcome["error"] = exc
+            finally:
+                events.put(None)  # sentinel: evidence stage finished
+
+        thread = threading.Thread(target=worker, daemon=True)
+        thread.start()
+        while True:
+            event = events.get()
+            if event is None:
+                break
+            yield sse(event)
+        thread.join()
+
+        if "error" in outcome:
+            yield sse({"type": "error",
+                       "message": f"Could not gather evidence: "
+                                  f"{outcome['error']}"})
+            yield sse({"type": "done"})
+            return
+
+        hits = outcome["hits"]
+        sources = _sources_json(hits)
+        if not hits:
+            yield sse({"type": "answer",
+                       "text": "No evidence could be retrieved for that "
+                               "input. Try rephrasing, or enable web "
+                               "search.",
+                       "sources": [], "evidence_only": False})
+            yield sse({"type": "done"})
+            return
+
+        yield sse({"type": "generating"})
+        system, user = _prompts(mode, text, hits)
+        try:
+            answer = generate(system, user)
+        except Exception as exc:  # LLM call failed; fall back to evidence
+            answer = None
+            yield sse({"type": "error",
+                       "message": f"Generation failed ({exc}); showing "
+                                  f"the retrieved evidence instead."})
+        if answer is None:
+            note = ("No LLM key configured on the server — showing the "
+                    "retrieved evidence instead of a generated answer. "
+                    "Set GROQ_API_KEY (or HF_TOKEN) to enable generation.")
+            yield sse({"type": "answer", "text": _evidence_text(hits),
+                       "sources": sources, "evidence_only": True,
+                       "note": note})
+        else:
+            yield sse({"type": "answer", "text": answer,
+                       "sources": sources, "evidence_only": False})
+        yield sse({"type": "done"})
+
+    return Response(
+        stream_with_context(gen()),
+        mimetype="text/event-stream",
+        headers={"Cache-Control": "no-cache",
+                 "X-Accel-Buffering": "no"},
+    )
 
 
 if __name__ == "__main__":

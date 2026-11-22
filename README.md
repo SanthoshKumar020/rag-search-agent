@@ -47,6 +47,15 @@ toggle web search on/off, and get the answer plus its sources. The web
 index is built in memory per request — nothing is written to disk, so
 it runs fine on serverless hosting.
 
+The page includes a **Live browser** panel: while a query runs, the
+agent's browsing streams to the page in real time (via the
+Server-Sent Events endpoint `POST /api/query/stream`) — you watch the
+search query, each page being opened and read (chars read, chunks
+taken, or why it was skipped), the indexing total, and which sources
+were finally used as evidence, before the answer appears. If streaming
+is unavailable, the UI falls back to the one-shot `POST /api/query`
+endpoint automatically.
+
 **Deploy on Vercel:**
 
 1. Import this repo in Vercel (New Project → Import Git Repository).
@@ -124,7 +133,7 @@ persistent on-disk index (`index/vectors.npz` + `index/chunks.json`).
 | `index_store.py` | Persistent numpy vector index + retrieval |
 | `llm.py` | Groq / HuggingFace generation |
 | `config.py` | Keys, model names, tuning constants |
-| `web_app.py` | Flask web UI (`/` page + `POST /api/query`) over the same pipeline |
+| `web_app.py` | Flask web UI (`/` page, `POST /api/query`, and the SSE `POST /api/query/stream` live-browsing endpoint) over the same pipeline |
 | `api/index.py` | Vercel serverless entrypoint (imports the app from `web_app.py`) |
 
 ## Honest limits

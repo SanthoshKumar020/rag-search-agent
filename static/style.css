@@ -95,3 +95,64 @@ button:disabled { opacity: 0.55; cursor: wait; }
 #steps-box ul { margin: 8px 0 0; padding-left: 20px; }
 .hidden { display: none !important; }
 footer { color: var(--muted); font-size: 0.9rem; }
+
+/* ---- Live browser panel ---- */
+.live-head {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  gap: 12px;
+}
+.live-head h2 { margin: 0; font-size: 1.15rem; }
+.live-state {
+  font-size: 0.85rem;
+  color: var(--muted);
+  border: 1px solid var(--border);
+  border-radius: 999px;
+  padding: 3px 12px;
+  white-space: nowrap;
+}
+.live-state.busy { color: var(--accent); border-color: var(--accent); }
+.live-state.ok { color: #7bd88a; border-color: #7bd88a; }
+.live-state.bad { color: var(--error); border-color: var(--error); }
+.live-search { color: var(--text); margin: 12px 0 4px; font-weight: 600; }
+.live-feed { display: flex; flex-direction: column; gap: 10px; margin-top: 12px; }
+.page-card {
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  padding: 10px 14px;
+  background: #141c2c;
+}
+.page-card.reading { border-color: var(--accent); }
+.page-card.done { opacity: 0.85; }
+.page-card.failed { opacity: 0.6; }
+.page-card.used {
+  border-color: #e8b93e;
+  box-shadow: 0 0 0 1px #e8b93e inset;
+}
+.page-head { display: flex; align-items: center; gap: 9px; }
+.page-badge {
+  flex: none;
+  width: 18px; height: 18px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 0.85rem;
+}
+.page-badge.ok { color: #7bd88a; }
+.page-badge.bad { color: var(--error); }
+.spinner.small { width: 14px; height: 14px; border-width: 2px; }
+.page-title { color: var(--text); font-weight: 600; text-decoration: none; }
+.page-title:hover { text-decoration: underline; }
+.page-url {
+  color: var(--muted);
+  font-size: 0.82rem;
+  word-break: break-all;
+  margin: 2px 0 0 27px;
+}
+.page-meta { color: var(--muted); font-size: 0.88rem; margin: 3px 0 0 27px; }
+.live-retrieved { margin-top: 16px; }
+.live-retrieved h3 { margin: 0 0 8px; font-size: 1rem; }
+.live-retrieved ul { margin: 0; padding-left: 20px; }
+.live-retrieved a { color: var(--accent); word-break: break-all; }
+.hit-score { color: var(--muted); font-size: 0.85rem; margin-left: 8px; }
