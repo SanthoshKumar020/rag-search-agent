@@ -1,0 +1,229 @@
+"""Tool-using personal agent loop (Muse-inspired).
+
+Combines web search, page fetch, optional browser control, memory,
+goals, and artifacts into a multi-step agent that works toward a
+user goal instead of answering in a single shot.
+
+This is intentionally simpler than Meta Muse: local storage, free-tier
+LLMs, no cloud VM, no payment APIs, no third-party OAuth connectors.
+"""
+from __future__ import annotations
+
+import json
+import re
+from typing import Any, Callable, Optional
+
+import artifacts
+import goals
+import memory
+from fetch import MIN_TEXT, fetch_text
+from llm import generate
+from search import web_search
+
+EventCallback = Callable[[dict], None]
+
+MAX_STEPS_DEFAULT = 8
+
+SYSTEM = """You are a personal AI agent. You complete tasks using tools.
+You have persistent memory about the user and can track long-running goals.
+
+Rules:
+- Prefer tools over guessing when facts are needed.
+- Never invent URLs, prices, or commitments.
+- For purchases or sending real emails: STOP and explain what the human must do — you cannot complete payments or send mail yourself.
+- When the task is done, call the finish tool with a clear summary.
+- Keep tool arguments short and concrete.
+
+User memory:
+{memory}
+
+Active goals:
+{goals}
+
+Reply with ONLY a single JSON object, no markdown fences, in one of these forms:
+{{"tool": "web_search", "query": "..."}}
+{{"tool": "fetch_page", "url": "..."}}
+{{"tool": "browse", "task": "..."}}
+{{"tool": "remember", "fact": "...", "kind": "fact|preference"}}
+{{"tool": "create_goal", "title": "...", "plan": "..."}}
+{{"tool": "update_goal", "id": "...", "status": "active|done|paused|cancelled", "note": "..."}}
+{{"tool": "list_goals"}}
+{{"tool": "save_artifact", "title": "...", "content": "...", "kind": "markdown|text|code"}}
+{{"tool": "recall_memory", "query": "..."}}
+{{"tool": "finish", "answer": "..."}}
+"""
+
+
+def _parse_action(text: str) -> dict[str, Any] | None:
+    if not text:
+        return None
+    text = text.strip()
+    # strip optional ```json fences
+    if text.startswith("```"):
+        text = re.sub(r"^```(?:json)?\s*", "", text)
+        text = re.sub(r"\s*```$", "", text)
+    # find first JSON object
+    start = text.find("{")
+    end = text.rfind("}")
+    if start < 0 or end <= start:
+        return None
+    try:
+        obj = json.loads(text[start : end + 1])
+        if isinstance(obj, dict) and "tool" in obj:
+            return obj
+    except json.JSONDecodeError:
+        pass
+    return None
+
+
+def _run_tool(action: dict[str, Any], on_event: EventCallback) -> str:
+    tool = (action.get("tool") or "").strip().lower()
+
+    if tool == "web_search":
+        q = (action.get("query") or "").strip()
+        on_event({"type": "tool", "tool": "web_search", "query": q})
+        results = web_search(q, max_results=5)
+        if not results:
+            return "No search results."
+        lines = [f"- {r['title']}: {r['url']}" for r in results]
+        return "Search results:\n" + "\n".join(lines)
+
+    if tool == "fetch_page":
+        url = (action.get("url") or "").strip()
+        on_event({"type": "tool", "tool": "fetch_page", "url": url})
+        text = fetch_text(url)
+        if len(text) < MIN_TEXT:
+            return f"Could not extract enough text from {url}"
+        snippet = " ".join(text.split())[:2500]
+        return f"Page content from {url}:\n{snippet}"
+
+    if tool == "browse":
+        task = (action.get("task") or "").strip()
+        on_event({"type": "tool", "tool": "browse", "task": task})
+        try:
+            import browser_agent
+            if not browser_agent.available():
+                return browser_agent._missing_message()
+            return browser_agent.run_browser_task(task, max_steps=25, headless=True)
+        except Exception as exc:
+            return f"Browse failed: {exc}"
+
+    if tool == "remember":
+        fact = (action.get("fact") or "").strip()
+        kind = (action.get("kind") or "fact").strip()
+        on_event({"type": "tool", "tool": "remember", "fact": fact})
+        return memory.remember(fact, kind=kind if kind in ("fact", "preference") else "fact")
+
+    if tool == "recall_memory":
+        q = (action.get("query") or "").strip()
+        on_event({"type": "tool", "tool": "recall_memory", "query": q})
+        lines = memory.recall(q)
+        return "Memory:\n" + ("\n".join(lines) if lines else "(empty)")
+
+    if tool == "create_goal":
+        title = (action.get("title") or "").strip()
+        plan = (action.get("plan") or "").strip()
+        on_event({"type": "tool", "tool": "create_goal", "title": title})
+        g = goals.create(title, plan)
+        return f"Created goal [{g['id']}]: {g['title']}"
+
+    if tool == "update_goal":
+        gid = (action.get("id") or "").strip()
+        status = action.get("status")
+        note = action.get("note")
+        on_event({"type": "tool", "tool": "update_goal", "id": gid})
+        try:
+            g = goals.update(gid, status=status, note=note)
+            return f"Updated goal [{g['id']}] status={g['status']}"
+        except KeyError as exc:
+            return str(exc)
+
+    if tool == "list_goals":
+        on_event({"type": "tool", "tool": "list_goals"})
+        active = goals.list_goals("active")
+        if not active:
+            return "No active goals."
+        return "Active goals:\n" + "\n".join(
+            f"- [{g['id']}] {g['title']}" for g in active
+        )
+
+    if tool == "save_artifact":
+        title = (action.get("title") or "Untitled").strip()
+        content = action.get("content") or ""
+        kind = (action.get("kind") or "markdown").strip()
+        on_event({"type": "tool", "tool": "save_artifact", "title": title})
+        meta = artifacts.save(title, content, kind=kind)
+        return f"Saved artifact [{meta['id']}] → {meta['path']}"
+
+    if tool == "finish":
+        return action.get("answer") or "(done)"
+
+    return f"Unknown tool: {tool}. Use one of the listed tools."
+
+
+def run_agent(
+    task: str,
+    *,
+    max_steps: int = MAX_STEPS_DEFAULT,
+    on_event: Optional[EventCallback] = None,
+) -> dict[str, Any]:
+    """Run the multi-step agent. Returns {answer, steps, tools_used}."""
+    emit = on_event or (lambda e: None)
+    task = (task or "").strip()
+    if not task:
+        return {"answer": "Please provide a task.", "steps": [], "tools_used": []}
+
+    emit({"type": "agent_start", "task": task})
+
+    system = SYSTEM.format(
+        memory=memory.summary_for_prompt(),
+        goals=goals.summary_for_prompt(),
+    )
+    transcript: list[str] = [f"User task: {task}"]
+    steps: list[str] = []
+    tools_used: list[str] = []
+
+    for i in range(1, max_steps + 1):
+        user_msg = (
+            "Conversation so far:\n"
+            + "\n".join(transcript[-12:])
+            + f"\n\nStep {i}/{max_steps}. Choose the next tool JSON (or finish)."
+        )
+        emit({"type": "agent_thinking", "step": i, "max_steps": max_steps})
+        raw = generate(system, user_msg)
+        if raw is None:
+            answer = (
+                "No LLM key configured. Set GROQ_API_KEY or HF_TOKEN to run "
+                "the tool-using agent. You can still use ask/reply/browse."
+            )
+            emit({"type": "error", "message": answer})
+            return {"answer": answer, "steps": steps, "tools_used": tools_used}
+
+        action = _parse_action(raw)
+        if not action:
+            # model returned prose — treat as final answer
+            steps.append(f"step {i}: model returned final text")
+            emit({"type": "agent_done", "answer": raw.strip()})
+            return {"answer": raw.strip(), "steps": steps, "tools_used": tools_used}
+
+        tool = (action.get("tool") or "").lower()
+        tools_used.append(tool)
+        steps.append(f"step {i}: {tool}")
+
+        if tool == "finish":
+            answer = (action.get("answer") or "").strip() or "Task complete."
+            emit({"type": "agent_done", "answer": answer})
+            return {"answer": answer, "steps": steps, "tools_used": tools_used}
+
+        observation = _run_tool(action, emit)
+        transcript.append(f"Assistant tool call: {json.dumps(action, ensure_ascii=False)}")
+        transcript.append(f"Observation: {observation[:3000]}")
+        emit({"type": "tool_result", "tool": tool, "preview": observation[:400]})
+
+    # max steps reached
+    answer = (
+        "Reached the step limit without a finish call. Partial progress is in "
+        "the steps above. Re-run with a narrower task or higher max_steps."
+    )
+    emit({"type": "agent_done", "answer": answer})
+    return {"answer": answer, "steps": steps, "tools_used": tools_used}
