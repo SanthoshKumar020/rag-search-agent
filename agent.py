@@ -6,11 +6,15 @@ Usage:
   python agent.py ask --local "What does my doc say about X?"
   python agent.py reply "Thanks for your email — can you explain pricing?"
   python agent.py add path/to/file-or-folder
+  python agent.py browse "Open BookMyShow and book a movie ticket for today…"
 
 Pipeline: web search (DuckDuckGo) -> fetch pages -> chunk -> embed ->
 vector retrieve -> free LLM (Groq / HuggingFace) writes a grounded
 answer or reply with source citations. With no LLM key it prints the
 retrieved evidence instead, so it still works with zero keys.
+
+The optional `browse` command drives a real Chromium via browser-use
+so the agent can click, type and complete multi-step web tasks.
 """
 import argparse
 import sys
@@ -265,6 +269,50 @@ def cmd_add(args) -> int:
     return 0
 
 
+def cmd_browse(args) -> int:
+    """Drive a real browser to complete a multi-step web task."""
+    try:
+        import browser_agent
+    except ImportError:
+        print("browser_agent module missing.", file=sys.stderr)
+        return 1
+
+    if not browser_agent.available():
+        print(browser_agent._missing_message(), file=sys.stderr)
+        return 1
+
+    task = args.task.strip()
+    if not task:
+        print("Please provide a non-empty task.", file=sys.stderr)
+        return 1
+
+    log(f"browser agent starting (max_steps={args.max_steps}, "
+        f"headless={not args.show})")
+
+    def _cli_event(ev: dict) -> None:
+        t = ev.get("type")
+        if t == "browse_start":
+            log(f"task: {ev.get('task', '')[:120]}")
+        elif t == "browse_done":
+            log("browser agent finished")
+
+    try:
+        result = browser_agent.run_browser_task(
+            task,
+            max_steps=args.max_steps,
+            headless=not args.show,
+            on_event=_cli_event,
+        )
+    except Exception as exc:
+        print(f"Browser agent failed: {exc}", file=sys.stderr)
+        return 1
+
+    print("\n--- Browser agent result ---\n")
+    print(result)
+    print()
+    return 0
+
+
 # ----------------------------------------------------------------------
 def main() -> int:
     parser = argparse.ArgumentParser(
@@ -286,6 +334,26 @@ def main() -> int:
     p_add = sub.add_parser("add", help="index local documents")
     p_add.add_argument("path")
     p_add.set_defaults(func=cmd_add)
+
+    p_browse = sub.add_parser(
+        "browse",
+        help="drive a real browser to complete a multi-step web task "
+             "(requires browser-use + LLM key)",
+    )
+    p_browse.add_argument(
+        "task",
+        help='e.g. "Open BookMyShow, search for [movie], pick 2 seats, '
+             'stop before payment"',
+    )
+    p_browse.add_argument(
+        "--max-steps", type=int, default=40,
+        help="safety limit on browser actions (default 40)",
+    )
+    p_browse.add_argument(
+        "--show", action="store_true",
+        help="show the browser window (default is headless)",
+    )
+    p_browse.set_defaults(func=cmd_browse)
 
     args = parser.parse_args()
     log(f"embeddings: {config.embed_backend()} | llm: {config.llm_backend()}")

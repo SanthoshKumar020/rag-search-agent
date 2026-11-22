@@ -6,6 +6,9 @@ index is built in memory per request (agent.web_evidence already uses
 IndexStore.build_ephemeral), so nothing is written to disk — safe on
 serverless hosts like Vercel.
 
+Also supports an optional **Browse** mode that drives a real Chromium
+via browser-use (local only — not available on pure serverless).
+
 Secrets come only from environment variables (see config.py, which
 loads .env locally and process env in production). No key is ever
 stored in code or in the repo.
@@ -92,10 +95,17 @@ def home():
 
 @app.get("/api/health")
 def health():
+    browse_ok = False
+    try:
+        import browser_agent
+        browse_ok = browser_agent.available()
+    except Exception:
+        pass
     return jsonify({
         "ok": True,
         "llm_backend": config.llm_backend(),
         "embed_backend": config.embed_backend(),
+        "browse_available": browse_ok,
     })
 
 
@@ -105,10 +115,14 @@ def query():
     text = (data.get("query") or "").strip()
     mode = (data.get("mode") or "ask").lower()
     use_web = data.get("use_web", True)
-    if mode not in ("ask", "reply"):
+    if mode not in ("ask", "reply", "browse"):
         mode = "ask"
     if not text:
         return jsonify({"error": "Please enter a question or message."}), 400
+
+    # ---- Browse mode (local Chromium via browser-use) -----------------
+    if mode == "browse":
+        return _browse_oneshot(text)
 
     steps = [f"embeddings: {config.embed_backend()} | "
              f"llm: {config.llm_backend()}"]
@@ -172,6 +186,50 @@ def query():
     })
 
 
+def _browse_oneshot(task: str):
+    """Non-streaming browse fallback."""
+    try:
+        import browser_agent
+    except ImportError:
+        return jsonify({
+            "answer": "",
+            "sources": [],
+            "steps": [],
+            "error": "browser_agent module not found.",
+        }), 501
+
+    if not browser_agent.available():
+        return jsonify({
+            "answer": "",
+            "sources": [],
+            "steps": [],
+            "error": browser_agent._missing_message(),
+            "note": (
+                "Browse mode needs browser-use installed and a local "
+                "Chromium. It does not run on pure serverless hosts "
+                "(Vercel). Use the CLI on your machine instead."
+            ),
+        }), 501
+
+    try:
+        result = browser_agent.run_browser_task(task, max_steps=40, headless=True)
+    except Exception as exc:
+        return jsonify({
+            "answer": "",
+            "sources": [],
+            "steps": [f"browser agent error: {exc}"],
+            "error": f"Browser agent failed: {exc}",
+        }), 502
+
+    return jsonify({
+        "answer": result,
+        "sources": [],
+        "steps": ["browser agent completed the task"],
+        "evidence_only": False,
+        "mode": "browse",
+    })
+
+
 def _prompts(mode: str, text: str, hits: list[dict]):
     """Build (system, user) generation prompts for ask/reply modes."""
     evidence = pipeline.evidence_block(hits, pipeline.format_sources(hits))
@@ -189,22 +247,23 @@ def query_stream():
     Emits one JSON event per line (`data: {...}`) as the pipeline
     actually progresses — search, per-page fetch/fetched, indexed,
     retrieved, answer, done — so the UI can render the agent's
-    browsing live. The evidence stage runs in a worker thread; its
-    on_event callbacks are forwarded through a queue to this
-    generator, which is what makes the events arrive incrementally
-    instead of all at once at the end.
+    browsing live. Browse mode emits browse_start / browse_done.
     """
     data = request.get_json(silent=True) or {}
     text = (data.get("query") or "").strip()
     mode = (data.get("mode") or "ask").lower()
     use_web = data.get("use_web", True)
-    if mode not in ("ask", "reply"):
+    if mode not in ("ask", "reply", "browse"):
         mode = "ask"
     if not text:
         return jsonify({"error": "Please enter a question or message."}), 400
 
     def sse(event: dict) -> str:
         return f"data: {json.dumps(event)}\n\n"
+
+    # ---- Browse mode stream ------------------------------------------
+    if mode == "browse":
+        return _browse_stream(text, sse)
 
     def gen():
         events: queue.Queue = queue.Queue()
@@ -281,6 +340,92 @@ def query_stream():
         else:
             yield sse({"type": "answer", "text": answer,
                        "sources": sources, "evidence_only": False})
+        yield sse({"type": "done"})
+
+    return Response(
+        stream_with_context(gen()),
+        mimetype="text/event-stream",
+        headers={"Cache-Control": "no-cache",
+                 "X-Accel-Buffering": "no"},
+    )
+
+
+def _browse_stream(task: str, sse):
+    """SSE stream for browse mode."""
+
+    def gen():
+        try:
+            import browser_agent
+        except ImportError:
+            yield sse({"type": "error",
+                       "message": "browser_agent module not found."})
+            yield sse({"type": "done"})
+            return
+
+        if not browser_agent.available():
+            yield sse({
+                "type": "error",
+                "message": browser_agent._missing_message(),
+            })
+            yield sse({
+                "type": "answer",
+                "text": (
+                    "Browse mode is not available here.\n\n"
+                    "It needs:\n"
+                    "  1. pip install 'browser-use==1.0.8'\n"
+                    "  2. A local Chromium (downloaded automatically)\n"
+                    "  3. GROQ_API_KEY or HF_TOKEN\n\n"
+                    "It does **not** run on pure serverless hosts (Vercel). "
+                    "Use the CLI on your machine:\n\n"
+                    f'  python agent.py browse "{task[:80]}…"'
+                ),
+                "sources": [],
+                "evidence_only": True,
+                "note": "Browse mode requires a local browser.",
+            })
+            yield sse({"type": "done"})
+            return
+
+        events: queue.Queue = queue.Queue()
+        outcome: dict = {}
+
+        def worker():
+            try:
+                result = browser_agent.run_browser_task(
+                    task,
+                    max_steps=40,
+                    headless=True,
+                    on_event=events.put,
+                )
+                outcome["result"] = result
+            except Exception as exc:
+                outcome["error"] = str(exc)
+            finally:
+                events.put(None)
+
+        thread = threading.Thread(target=worker, daemon=True)
+        thread.start()
+
+        while True:
+            event = events.get()
+            if event is None:
+                break
+            yield sse(event)
+        thread.join()
+
+        if "error" in outcome:
+            yield sse({"type": "error",
+                       "message": f"Browser agent failed: {outcome['error']}"})
+            yield sse({"type": "done"})
+            return
+
+        yield sse({
+            "type": "answer",
+            "text": outcome.get("result", "(no result)"),
+            "sources": [],
+            "evidence_only": False,
+            "mode": "browse",
+        })
         yield sse({"type": "done"})
 
     return Response(
