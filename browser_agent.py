@@ -17,6 +17,7 @@ Safety defaults baked into every task:
 from __future__ import annotations
 
 import asyncio
+import os
 import sys
 from typing import Callable, Optional
 
@@ -58,8 +59,14 @@ def _make_llm():
     """Map the project's existing free-tier keys onto browser-use's ChatOpenAI."""
     backend = config.llm_backend()
     if backend == "groq":
+        # Browse mode drives browser-use's Python REPL, so the model must
+        # emit code as text. Groq's gpt-oss models (config.GROQ_MODEL) emit
+        # native tool calls instead, which Groq's API rejects ("Model called
+        # python tool which was not enabled") and the run dies. qwen3.8-27b
+        # follows the code-as-text pattern and works — verified live.
+        model = os.environ.get("BROWSE_MODEL", "qwen/qwen3.8-27b")
         return ChatOpenAI(
-            model=config.GROQ_MODEL,
+            model=model,
             api_key=config.GROQ_API_KEY,
             base_url="https://api.groq.com/openai/v1",
         )
