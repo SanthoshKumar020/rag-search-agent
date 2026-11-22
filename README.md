@@ -5,6 +5,11 @@ and answers questions — or drafts replies — grounded in what it actually
 found**, with sources cited. It can also index your own documents and
 answer questions from them.
 
+**New:** optional **Browse mode** drives a real Chromium (via
+[browser-use](https://github.com/browser-use/browser-use)) so you can say
+things like *“open BookMyShow and book a movie”* and the agent will click,
+type and navigate on its own — stopping before any payment.
+
 Everything runs on **free tiers**. With no API keys at all it still
 works: it searches, retrieves evidence and prints it (embeddings fall
 back to local TF-IDF). Add a free Groq or HuggingFace key and it writes
@@ -20,6 +25,9 @@ full answers and ready-to-send replies.
   sending. The agent never invents facts to fill gaps.
 - **Q&A over your own documents** — `add` your notes, docs or PDFs once,
   then `ask --local` answers from them offline.
+- **Autonomous browser tasks** — `browse` opens a real browser and follows
+  multi-step instructions (forms, ticket selection, research sites…).
+  Always stops before payment.
 
 ## Quick start
 
@@ -38,14 +46,21 @@ python agent.py add ~/notes/project-docs/
 python agent.py ask --local "What did we decide about the schema?"
 ```
 
+### Optional: autonomous browser (Browse mode)
+
+```bash
+pip install 'browser-use==1.0.8'   # downloads Chromium on first run
+python agent.py browse "Open BookMyShow, search for [movie name], pick the earliest show in [city] today, select 2 seats, and STOP before payment. Summarise what you selected."
+# Add --show to watch the browser window
+```
+
 ## Web app (Vercel)
 
 The same pipeline is available as a small web app (`web_app.py`): a
 chat-style page where you type a question or paste a message, pick
-**Ask** (grounded answer with citations) or **Reply** (draft a reply),
-toggle web search on/off, and get the answer plus its sources. The web
-index is built in memory per request — nothing is written to disk, so
-it runs fine on serverless hosting.
+**Ask** / **Reply** / **Browse**, toggle web search on/off, and get the
+answer plus its sources. The web index is built in memory per request —
+nothing is written to disk, so it runs fine on serverless hosting.
 
 The page includes a **Live browser** panel: while a query runs, the
 agent's browsing streams to the page in real time (via the
@@ -55,6 +70,10 @@ taken, or why it was skipped), the indexing total, and which sources
 were finally used as evidence, before the answer appears. If streaming
 is unavailable, the UI falls back to the one-shot `POST /api/query`
 endpoint automatically.
+
+**Browse mode** is supported in the UI but only works when the server
+has a real Chromium (i.e. running locally). On pure serverless (Vercel)
+it returns a clear message and points you to the CLI.
 
 **Deploy on Vercel:**
 
@@ -75,14 +94,14 @@ Run it locally the same way as the CLI environment:
 python web_app.py   # http://127.0.0.1:5000
 ```
 
-The CLI (`agent.py ask / reply / add`) works exactly as before and is
+The CLI (`agent.py ask / reply / add / browse`) works exactly as before and is
 unaffected by the web app.
 
 ## Free API keys (optional but recommended)
 
 | Key | Used for | Get it free |
 | --- | -------- | ----------- |
-| `GROQ_API_KEY` | Answer/reply generation (Groq, default model `openai/gpt-oss-120b`; override with `GROQ_MODEL`) | https://console.groq.com |
+| `GROQ_API_KEY` | Answer/reply generation + browser agent (Groq, default model `openai/gpt-oss-120b`; override with `GROQ_MODEL`) | https://console.groq.com |
 | `HF_TOKEN` | Semantic embeddings (all-MiniLM-L6-v2) + fallback chat model | https://huggingface.co/settings/tokens |
 
 Put them in `.env` (see `.env.example`). Behaviour by configuration:
@@ -122,11 +141,17 @@ Put them in `.env` (see `.env.example`). Behaviour by configuration:
 For local documents the same chunk/embed/retrieve steps run over a
 persistent on-disk index (`index/vectors.npz` + `index/chunks.json`).
 
+**Browse mode** instead hands the natural-language task to a
+[browser-use](https://github.com/browser-use/browser-use) Agent that
+controls a real Chromium via CDP, with a hard safety rule baked in:
+never submit payment.
+
 ### Modules
 
 | File | Role |
 | ---- | ---- |
-| `agent.py` | CLI (`ask` / `reply` / `add`) and pipeline orchestration |
+| `agent.py` | CLI (`ask` / `reply` / `add` / `browse`) and pipeline orchestration |
+| `browser_agent.py` | Optional autonomous browser agent (browser-use) |
 | `search.py` | Web search transport chain (DuckDuckGo first) |
 | `fetch.py` | Page fetching, text extraction, chunking |
 | `embed.py` | HuggingFace embeddings with TF-IDF fallback |
@@ -152,3 +177,7 @@ persistent on-disk index (`index/vectors.npz` + `index/chunks.json`).
   keywords rather than meaning, so phrasing matters more.
 - The local index's TF-IDF vocabulary is fixed by the first corpus added;
   for a very different document set, delete `index/` and re-add.
+- **Browse mode** needs a real browser and is **not available on pure
+  serverless** (Vercel). CAPTCHAs, logins and aggressive anti-bot on
+  ticket sites can still block the agent; always review the result and
+  never let it spend money without your explicit OK.

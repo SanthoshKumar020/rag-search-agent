@@ -88,6 +88,16 @@ button:disabled { opacity: 0.55; cursor: wait; }
   border-radius: 8px;
   padding: 10px 12px;
 }
+.browse-hint {
+  margin: 12px 0 0;
+  padding: 10px 12px;
+  border-radius: 8px;
+  background: #152033;
+  border: 1px solid #2a4a7a;
+  color: var(--muted);
+  font-size: 0.92rem;
+}
+.browse-hint em { color: var(--text); }
 .answer { white-space: pre-wrap; word-wrap: break-word; }
 .sources { padding-left: 20px; }
 .sources a { color: var(--accent); word-break: break-all; }
@@ -95,6 +105,13 @@ button:disabled { opacity: 0.55; cursor: wait; }
 #steps-box ul { margin: 8px 0 0; padding-left: 20px; }
 .hidden { display: none !important; }
 footer { color: var(--muted); font-size: 0.9rem; }
+footer code {
+  background: #1a2233;
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  padding: 1px 5px;
+  font-size: 0.85em;
+}
 
 /* ---- Live browser panel ---- */
 .live-head {

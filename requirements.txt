@@ -6,3 +6,7 @@ numpy>=1.26
 scikit-learn>=1.4
 python-dotenv>=1.0
 pypdf>=4.0
+
+# Optional — autonomous browser agent (local only)
+# Install with:  pip install 'browser-use==1.0.8'
+# browser-use==1.0.8

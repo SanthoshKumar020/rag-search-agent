@@ -10,9 +10,8 @@
   <main class="wrap">
     <header>
       <h1>🔎 Search + RAG Reply Agent</h1>
-      <p class="sub">Ask a question or paste a message — the agent searches the web,
-        reads the top pages, and answers (or drafts a reply) grounded in what it
-        found, with sources cited.</p>
+      <p class="sub">Ask a question, draft a reply, or let the agent <strong>drive a real browser</strong>
+        to complete multi-step tasks (BookMyShow, forms, research sites…) grounded in live pages.</p>
     </header>
 
     <section class="card">
@@ -25,18 +24,28 @@
           <input type="radio" name="mode" value="reply">
           <span>Reply — draft a response</span>
         </label>
+        <label>
+          <input type="radio" name="mode" value="browse">
+          <span>Browse — act in a real browser</span>
+        </label>
       </div>
 
       <textarea id="query" rows="4"
         placeholder="e.g. What is Delta Lake medallion architecture?"></textarea>
 
       <div class="row">
-        <label class="toggle">
+        <label class="toggle" id="web-toggle-wrap">
           <input type="checkbox" id="use-web" checked>
           <span>Use web search</span>
         </label>
         <button id="go" type="button">Run agent</button>
       </div>
+
+      <p id="browse-hint" class="browse-hint hidden">
+        Browse mode opens a real Chromium and follows your instructions step by step.
+        It will <strong>never submit payment</strong>. Works best locally (not on pure serverless).
+        Example: <em>Open BookMyShow, search for [movie], pick 2 seats in [city] today, stop before payment.</em>
+      </p>
 
       <div id="status" class="status hidden">
         <span class="spinner"></span>
@@ -47,7 +56,7 @@
 
     <section id="live" class="card hidden" aria-live="polite">
       <div class="live-head">
-        <h2>🌐 Live browser</h2>
+        <h2 id="live-title">🌐 Live browser</h2>
         <span id="live-state" class="live-state">idle</span>
       </div>
       <p id="live-search" class="live-search hidden"></p>
@@ -62,7 +71,7 @@
       <h2 id="result-title">Answer</h2>
       <p id="note" class="note hidden"></p>
       <div id="answer" class="answer"></div>
-      <h3>Sources</h3>
+      <h3 id="sources-heading">Sources</h3>
       <ol id="sources" class="sources"></ol>
       <details id="steps-box">
         <summary>What the agent did</summary>
@@ -73,6 +82,7 @@
     <footer>
       <p>Free tiers only (Groq / HuggingFace). With no LLM key configured the
         agent returns the retrieved evidence instead of a generated answer.
+        Browse mode needs <code>browser-use</code> + a local Chromium.
         Answers are only as good as their sources — check the citations.</p>
     </footer>
   </main>

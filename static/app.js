@@ -2,21 +2,31 @@
   const btn = document.getElementById("go");
   const queryEl = document.getElementById("query");
   const webEl = document.getElementById("use-web");
+  const webToggleWrap = document.getElementById("web-toggle-wrap");
+  const browseHint = document.getElementById("browse-hint");
   const statusEl = document.getElementById("status");
   const statusTextEl = document.getElementById("status-text");
   const errorEl = document.getElementById("error");
   const resultEl = document.getElementById("result");
   const answerEl = document.getElementById("answer");
   const sourcesEl = document.getElementById("sources");
+  const sourcesHeading = document.getElementById("sources-heading");
   const stepsEl = document.getElementById("steps");
   const noteEl = document.getElementById("note");
   const titleEl = document.getElementById("result-title");
   const liveEl = document.getElementById("live");
+  const liveTitleEl = document.getElementById("live-title");
   const liveStateEl = document.getElementById("live-state");
   const liveSearchEl = document.getElementById("live-search");
   const liveFeedEl = document.getElementById("live-feed");
   const liveRetrievedEl = document.getElementById("live-retrieved");
   const liveHitsEl = document.getElementById("live-hits");
+
+  const PLACEHOLDERS = {
+    ask: "e.g. What is Delta Lake medallion architecture?",
+    reply: "e.g. Hi, can you explain your refund policy for annual plans?",
+    browse: "e.g. Open BookMyShow, search for [movie], pick 2 seats in [city] today, stop before payment",
+  };
 
   const cards = new Map(); // url -> {card, meta, badge}
   const stepLines = [];
@@ -26,6 +36,25 @@
     const el = document.querySelector('input[name="mode"]:checked');
     return el ? el.value : "ask";
   }
+
+  function updateModeUI() {
+    const mode = currentMode();
+    queryEl.placeholder = PLACEHOLDERS[mode] || PLACEHOLDERS.ask;
+    if (mode === "browse") {
+      webToggleWrap.classList.add("hidden");
+      browseHint.classList.remove("hidden");
+      liveTitleEl.textContent = "🖱️ Browser agent";
+    } else {
+      webToggleWrap.classList.remove("hidden");
+      browseHint.classList.add("hidden");
+      liveTitleEl.textContent = "🌐 Live browser";
+    }
+  }
+
+  document.querySelectorAll('input[name="mode"]').forEach(function (el) {
+    el.addEventListener("change", updateModeUI);
+  });
+  updateModeUI();
 
   function showError(msg) {
     errorEl.textContent = msg;
@@ -93,7 +122,10 @@
   }
 
   function renderAnswer(data, mode) {
-    titleEl.textContent = mode === "reply" ? "Draft reply" : "Answer";
+    if (mode === "reply") titleEl.textContent = "Draft reply";
+    else if (mode === "browse") titleEl.textContent = "Browser agent result";
+    else titleEl.textContent = "Answer";
+
     answerEl.textContent = data.answer || data.text || "";
     if (data.note) {
       noteEl.textContent = data.note;
@@ -101,17 +133,27 @@
     } else {
       noteEl.classList.add("hidden");
     }
+
+    const sources = data.sources || [];
     sourcesEl.innerHTML = "";
-    (data.sources || []).forEach(function (s) {
-      const li = document.createElement("li");
-      const a = document.createElement("a");
-      a.href = s.url;
-      a.target = "_blank";
-      a.rel = "noopener";
-      a.textContent = s.title || s.url;
-      li.appendChild(a);
-      sourcesEl.appendChild(li);
-    });
+    if (sources.length === 0) {
+      sourcesHeading.classList.add("hidden");
+      sourcesEl.classList.add("hidden");
+    } else {
+      sourcesHeading.classList.remove("hidden");
+      sourcesEl.classList.remove("hidden");
+      sources.forEach(function (s) {
+        const li = document.createElement("li");
+        const a = document.createElement("a");
+        a.href = s.url;
+        a.target = "_blank";
+        a.rel = "noopener";
+        a.textContent = s.title || s.url;
+        li.appendChild(a);
+        sourcesEl.appendChild(li);
+      });
+    }
+
     stepsEl.innerHTML = "";
     (data.steps && data.steps.length ? data.steps : stepLines)
       .forEach(function (s) {
@@ -211,11 +253,53 @@
         setLiveState("writing the answer…", "busy");
         statusTextEl.textContent = "Writing the answer from the evidence…";
         break;
+
+      // ---- Browse mode events ------------------------------------
+      case "browse_start":
+        setLiveState("browser agent running…", "busy");
+        statusTextEl.textContent =
+          "Browser agent is controlling Chromium (this can take 1–3 minutes)…";
+        liveSearchEl.textContent = "🖱️ Task: “" + (ev.task || "").slice(0, 160) + "”";
+        liveSearchEl.classList.remove("hidden");
+        addStep("browser agent started: " + (ev.task || "").slice(0, 120));
+        // Show a single status card in the live feed
+        liveFeedEl.innerHTML = "";
+        const card = document.createElement("div");
+        card.className = "page-card reading";
+        card.innerHTML =
+          '<div class="page-head">' +
+          '<span class="page-badge spinner small"></span>' +
+          '<span class="page-title">Controlling real Chromium…</span></div>' +
+          '<div class="page-meta">The agent is clicking, typing and navigating. ' +
+          "It will stop before any payment.</div>";
+        liveFeedEl.appendChild(card);
+        break;
+      case "browse_done":
+        setLiveState("browser finished", "ok");
+        statusTextEl.textContent = "Browser agent finished.";
+        addStep("browser agent finished");
+        // Update the status card
+        const doneCard = liveFeedEl.querySelector(".page-card");
+        if (doneCard) {
+          doneCard.classList.remove("reading");
+          doneCard.classList.add("done");
+          const badge = doneCard.querySelector(".page-badge");
+          if (badge) {
+            badge.className = "page-badge ok";
+            badge.textContent = "✓";
+          }
+          const meta = doneCard.querySelector(".page-meta");
+          if (meta) meta.textContent = "Task completed — see result below.";
+        }
+        break;
+
       case "answer":
         renderAnswer(ev, mode);
         addStep(ev.evidence_only
-          ? "no LLM key configured — showed retrieved evidence"
-          : "answer generated from the evidence");
+          ? "no LLM key / browse unavailable — showed message"
+          : (mode === "browse"
+              ? "browser agent returned a result"
+              : "answer generated from the evidence"));
         break;
       case "error":
         showError(ev.message);
@@ -273,6 +357,10 @@
     const data = await resp.json();
     if (!resp.ok && data.error && !data.answer) {
       showError(data.error);
+      if (data.note) {
+        noteEl.textContent = data.note;
+        noteEl.classList.remove("hidden");
+      }
       return;
     }
     renderAnswer(data, mode);
@@ -283,13 +371,15 @@
     errorEl.classList.add("hidden");
     resultEl.classList.add("hidden");
     if (!query) {
-      showError("Please enter a question or a message first.");
+      showError("Please enter a question, message, or browser task first.");
       return;
     }
     const mode = currentMode();
     btn.disabled = true;
     statusEl.classList.remove("hidden");
-    statusTextEl.textContent = "Working…";
+    statusTextEl.textContent = mode === "browse"
+      ? "Starting browser agent…"
+      : "Working…";
     resetLive();
     try {
       await runStream(query, mode);
