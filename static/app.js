@@ -389,6 +389,7 @@
       statusEl.classList.add("hidden");
       loadHistory();
       loadActivity();
+      loadRuns();
       loadMemory();
     }
   }
@@ -931,6 +932,95 @@
     });
   });
 
+  // ---- Runs panel: traces + resume (v4) --------------------------------
+
+  const runsListEl = document.getElementById("runs-list");
+  const runTraceEl = document.getElementById("run-trace");
+  const runsMsg = document.getElementById("runs-msg");
+
+  async function showRunTrace(id) {
+    runTraceEl.innerHTML = "";
+    runTraceEl.appendChild(el("p", "muted", "Loading trace…"));
+    try {
+      const resp = await fetch("/api/runs/" + encodeURIComponent(id));
+      const d = await resp.json();
+      runTraceEl.innerHTML = "";
+      if (!resp.ok || !d.run) {
+        runTraceEl.appendChild(el("p", "muted", d.error || "Run not found."));
+        return;
+      }
+      const run = d.run;
+      runTraceEl.appendChild(el("h3", null, "Trace — " + (run.task || "")));
+      const ul = el("ul", "history-list");
+      (run.trace || []).forEach(function (t) {
+        const li = el("li", "history-item");
+        li.appendChild(el("span", "history-meta",
+          "step " + (t.step || "?") + " · " + (t.tool || "") +
+          (t.blocked ? " · 🚫 policy-blocked" : "") +
+          " · " + (t.ms || 0) + " ms — "));
+        li.appendChild(el("span", null, (t.observation || "").slice(0, 220)));
+        ul.appendChild(li);
+      });
+      if (!ul.children.length) {
+        ul.appendChild(el("li", "muted", "No trace steps recorded."));
+      }
+      runTraceEl.appendChild(ul);
+      if (run.answer) {
+        runTraceEl.appendChild(el("p", null, "Answer: " + run.answer.slice(0, 400)));
+      }
+    } catch (e) {
+      runTraceEl.innerHTML = "";
+      runTraceEl.appendChild(el("p", "muted", "Could not load the trace."));
+    }
+  }
+
+  async function loadRuns() {
+    if (!runsListEl) return;
+    try {
+      const resp = await fetch("/api/runs");
+      const data = await resp.json();
+      runsListEl.innerHTML = "";
+      (data.runs || []).forEach(function (r) {
+        const li = el("li", "history-item");
+        const when = r.started_at ? new Date(r.started_at).toLocaleString() : "";
+        li.appendChild(el("span", "history-meta",
+          when + " · " + (r.status || "") + " · " + (r.source || "") +
+          " · " + (r.steps || 0) + " steps — "));
+        li.appendChild(el("span", null, r.task || ""));
+        const traceBtn = el("button", "del-btn", "trace");
+        traceBtn.type = "button";
+        traceBtn.title = "Show step trace";
+        traceBtn.addEventListener("click", function () { showRunTrace(r.id); });
+        li.appendChild(traceBtn);
+        if (r.resumable) {
+          const resumeBtn = el("button", "del-btn", "▶ resume");
+          resumeBtn.type = "button";
+          resumeBtn.title = "Continue this run from its stored context";
+          resumeBtn.addEventListener("click", async function () {
+            runsMsg.textContent = "Resuming run…";
+            try {
+              const resp2 = await fetch("/api/runs/resume", {
+                method: "POST",
+                headers: { "Content-Type": "application/json" },
+                body: JSON.stringify({ id: r.id }),
+              });
+              const d2 = await resp2.json();
+              runsMsg.textContent = d2.error ||
+                ("Resumed answer: " + (d2.answer || "").slice(0, 240));
+              loadRuns();
+              loadActivity();
+            } catch (e) { runsMsg.textContent = "Resume failed."; }
+          });
+          li.appendChild(resumeBtn);
+        }
+        runsListEl.appendChild(li);
+      });
+      if (!runsListEl.children.length) {
+        runsListEl.appendChild(el("li", "muted", "No agent runs recorded yet."));
+      }
+    } catch (e) { /* panel stays empty */ }
+  }
+
   checkHealth();
   loadBriefing();
   loadCards();
@@ -939,5 +1029,6 @@
   loadSkills();
   loadHistory();
   loadActivity();
+  loadRuns();
   loadTasks();
 })();

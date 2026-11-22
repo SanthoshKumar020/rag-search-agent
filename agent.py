@@ -335,6 +335,9 @@ def cmd_agent(args) -> int:
         print("\nSteps:")
         for s in result["steps"]:
             print(f"  - {s}")
+    if result.get("run_id"):
+        print(f"\nRun [{result['run_id']}] — trace: "
+              f"python agent.py runs show {result['run_id']}")
     print()
     return 0
 
@@ -501,6 +504,62 @@ def cmd_mood(args) -> int:
     return 0
 
 
+def cmd_runs(args) -> int:
+    import runs as runs_mod
+
+    if args.runs_cmd == "list":
+        items = runs_mod.list_runs()
+        if not items:
+            print("(no agent runs recorded yet)")
+            return 0
+        for r in items:
+            print(f"  [{r['id']}] {r['status']:<10} ({r['source']}) "
+                  f"{r['task'][:80]}")
+        return 0
+    if args.runs_cmd == "show":
+        run = runs_mod.get(args.id)
+        if run is None:
+            print(f"Run not found: {args.id}", file=sys.stderr)
+            return 1
+        print(f"[{run['id']}] {run['task']}")
+        print(f"  status: {run['status']}  source: {run['source']}  "
+              f"started: {run['started_at']}")
+        for t in run.get("trace") or []:
+            mark = " BLOCKED" if t.get("blocked") else ""
+            print(f"  step {t.get('step')}: {t.get('tool')}{mark} "
+                  f"({t.get('ms', 0)} ms)")
+            print(f"      → {(t.get('observation') or '')[:160]}")
+        if run.get("answer"):
+            print(f"\nAnswer:\n{run['answer']}")
+        return 0
+    if args.runs_cmd == "resume":
+        import agent_core
+
+        try:
+            result = agent_core.resume_run(args.id,
+                                           follow_up=args.follow_up or "")
+        except KeyError as exc:
+            print(str(exc), file=sys.stderr)
+            return 1
+        print(result.get("answer") or "")
+        return 0
+    print("Unknown runs command", file=sys.stderr)
+    return 1
+
+
+def cmd_sessions(args) -> int:
+    import sessions as sessions_mod
+
+    if args.query:
+        found = sessions_mod.search(args.query)
+        print(sessions_mod.format_results(found))
+    else:
+        for e in sessions_mod.list_recent():
+            when = (e.get("time") or "")[:16].replace("T", " ")
+            print(f"  [{e['id']}] {when} ({e['source']}) {e['task'][:80]}")
+    return 0
+
+
 def main() -> int:
     parser = argparse.ArgumentParser(
         prog="agent.py",
@@ -545,7 +604,8 @@ def main() -> int:
     m_list.add_argument("query", nargs="?", default="")
     m_add = mem_sub.add_parser("add")
     m_add.add_argument("text")
-    m_add.add_argument("--kind", choices=("fact", "preference"), default="fact")
+    m_add.add_argument("--kind", choices=("fact", "preference", "instruction"),
+                       default="fact")
     mem_sub.add_parser("clear")
     p_mem.set_defaults(func=cmd_memory)
 
@@ -606,6 +666,22 @@ def main() -> int:
     p_mood.add_argument("--language", choices=("both", "ta", "en"),
                         default="both")
     p_mood.set_defaults(func=cmd_mood)
+
+    p_runs = sub.add_parser(
+        "runs", help="agent run records: traces, status, resume (v4)")
+    run_sub = p_runs.add_subparsers(dest="runs_cmd", required=True)
+    run_sub.add_parser("list")
+    r_show = run_sub.add_parser("show")
+    r_show.add_argument("id")
+    r_resume = run_sub.add_parser("resume")
+    r_resume.add_argument("id")
+    r_resume.add_argument("--follow-up", default="")
+    p_runs.set_defaults(func=cmd_runs)
+
+    p_sessions = sub.add_parser(
+        "sessions", help="search past agent sessions (v4)")
+    p_sessions.add_argument("query", nargs="?", default="")
+    p_sessions.set_defaults(func=cmd_sessions)
 
     args = parser.parse_args()
     log(f"embeddings: {config.embed_backend()} | llm: {config.llm_backend()}")

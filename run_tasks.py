@@ -38,7 +38,8 @@ def run_due_tasks(max_steps: int = 8) -> list[dict]:
         tasks.mark_running(tid)
         try:
             result = agent_core.run_agent(task["instruction"],
-                                          max_steps=max_steps)
+                                          max_steps=max_steps,
+                                          source="scheduled")
             answer = result.get("answer") or ""
             tasks.mark_done(tid, answer)
             activity.add_entry(f"[scheduled] {task['instruction']}",

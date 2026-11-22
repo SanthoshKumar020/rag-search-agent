@@ -4,21 +4,37 @@ Combines web search, page fetch, optional browser control, memory,
 goals, and artifacts into a multi-step agent that works toward a
 user goal instead of answering in a single shot.
 
-This is intentionally simpler than Meta Muse: local storage, free-tier
-LLMs, no cloud VM, no payment APIs, no third-party OAuth connectors.
+v4 (patterns adapted from Hermes Agent + the agent-harness topic —
+see ~/workspace/research_notes/hermes-agent-harness-20261122):
+  - context compression: long transcripts are digested (head + tail
+    protected) instead of hard-truncated (context.py)
+  - tool risk tiers + fail-closed policy: unattended runs
+    (scheduled/webhook) cannot use the browser tool (policy.py)
+  - delegation: the `delegate` tool runs an isolated sub-agent
+  - run records with structured traces + resume (runs.py)
+  - cross-session log + `search_sessions` tool (sessions.py)
+  - standing instructions in memory, always injected (memory.py)
+
+This is intentionally simpler than Meta Muse / Hermes: local JSON
+storage, free-tier LLMs, no cloud VM, no payment APIs, no OAuth.
 """
 from __future__ import annotations
 
 import json
 import re
+import time
 from typing import Any, Callable, Optional
 
 import artifacts
 import config
+import context as context_mod
 import goals
 import media
 import memory
+import policy
 import reminders
+import runs
+import sessions
 import skills
 import tasks as tasks_mod
 import tools_extra
@@ -39,6 +55,9 @@ Rules:
 - For purchases or sending real emails: STOP and explain what the human must do — you cannot complete payments or send mail yourself.
 - When the task is done, call the finish tool with a clear summary.
 - Keep tool arguments short and concrete.
+- Memory: when you learn a durable fact or preference about the user, save it with the remember tool. If the user states a standing rule ("always…", "from now on…"), save it with kind "instruction".
+- Delegation: for a self-contained sub-piece of a big task (e.g. researching one sub-topic), you may call delegate with that subtask; a sub-agent runs it and returns its result. Do not delegate the whole task.
+- Past work: use search_sessions to check what you did in earlier runs before repeating research.
 - Scheduling: when the user asks for something at a FUTURE time ("tomorrow 11:00 am book/check X", "in 2 hours remind me via a task"), call create_task with the instruction and the time in the user's own words (e.g. "tomorrow 11:00 am"). Then finish by confirming the stored time (IST). A scheduled task runs later through this same loop with these same safety rules — it still cannot pay or send real messages.
 - Friend mode: when the user expresses a feeling or mood ("I feel sad", "I'm stressed", "feeling lonely"), FIRST respond like a warm friend — acknowledge the feeling briefly and kindly in the finish answer — and use suggest_media to offer songs/shows/movies that fit the mood. Never sound clinical or robotic with feelings.
 
@@ -47,6 +66,9 @@ User memory:
 
 Active goals:
 {goals}
+
+Standing instructions from the user (always follow these):
+{instructions}
 
 Reply with ONLY a single JSON object, no markdown fences, in one of these forms:
 {{"tool": "web_search", "query": "..."}}
@@ -61,7 +83,7 @@ Reply with ONLY a single JSON object, no markdown fences, in one of these forms:
 {{"tool": "translate", "text": "...", "to": "ta"}}  (to = language code, source is English)
 {{"tool": "holidays", "country": "IN", "year": 2026}}  (both optional; next 5 upcoming)
 {{"tool": "define", "word": "..."}}
-{{"tool": "remember", "fact": "...", "kind": "fact|preference"}}
+{{"tool": "remember", "fact": "...", "kind": "fact|preference|instruction"}}
 {{"tool": "create_goal", "title": "...", "plan": "..."}}
 {{"tool": "update_goal", "id": "...", "status": "active|done|paused|cancelled", "note": "..."}}
 {{"tool": "list_goals"}}
@@ -73,6 +95,8 @@ Reply with ONLY a single JSON object, no markdown fences, in one of these forms:
 {{"tool": "suggest_media", "mood": "sad", "language": "both"}}  (language: both|ta|en — default both)
 {{"tool": "save_artifact", "title": "...", "content": "...", "kind": "markdown|text|code"}}
 {{"tool": "recall_memory", "query": "..."}}
+{{"tool": "search_sessions", "query": "..."}}
+{{"tool": "delegate", "task": "..."}}
 {{"tool": "list_skills"}}
 {{"tool": "use_skill", "name": "interview-prep"}}
 {{"tool": "finish", "answer": "..."}}
@@ -80,14 +104,14 @@ Reply with ONLY a single JSON object, no markdown fences, in one of these forms:
 
 
 # ----------------------------------------------------------------------
-# Structured tool schemas (v3)
+# Structured tool schemas (v3, tier-annotated in v4)
 #
-# A machine-readable registry of every tool — name, description, and
-# JSON-Schema-style parameters — so other programs (and GET /api/tools)
-# can discover what the agent can do, the same idea as MCP tool
-# definitions. The loop itself still uses the JSON protocol in SYSTEM;
-# this registry is the contract/documentation layer and must be kept
-# in sync with _run_tool.
+# A machine-readable registry of every tool — name, description,
+# JSON-Schema-style parameters, and risk tier — so other programs
+# (and GET /api/tools) can discover what the agent can do, the same
+# idea as MCP tool definitions. The loop itself still uses the JSON
+# protocol in SYSTEM; this registry is the contract/documentation
+# layer and must be kept in sync with _run_tool.
 # ----------------------------------------------------------------------
 def _schema(name: str, description: str,
             properties: dict[str, Any],
@@ -95,6 +119,7 @@ def _schema(name: str, description: str,
     return {
         "name": name,
         "description": description,
+        "tier": policy.tier_of(name),
         "parameters": {
             "type": "object",
             "properties": properties,
@@ -125,7 +150,8 @@ TOOL_SCHEMAS: list[dict[str, Any]] = [
             {"country": _STR, "year": {"type": "integer"}}),
     _schema("define", "Dictionary definition of a word.",
             {"word": _STR}, ["word"]),
-    _schema("remember", "Store a fact or preference in memory.",
+    _schema("remember", "Store a fact, preference or standing "
+            "instruction in memory.",
             {"fact": _STR, "kind": _STR}, ["fact"]),
     _schema("recall_memory", "Search memory.", {"query": _STR}),
     _schema("create_goal", "Create a long-running goal.",
@@ -149,6 +175,14 @@ TOOL_SCHEMAS: list[dict[str, Any]] = [
     _schema("save_artifact", "Save a document/code artifact.",
             {"title": _STR, "content": _STR, "kind": _STR},
             ["title", "content"]),
+    _schema("search_sessions",
+            "Search past agent runs/sessions for earlier work.",
+            {"query": _STR}, ["query"]),
+    _schema("delegate",
+            "Hand a self-contained subtask to an isolated sub-agent "
+            "(4-step budget, same policy ceiling, cannot delegate "
+            "further).",
+            {"task": _STR}, ["task"]),
     _schema("list_skills", "List installed skills.", {}),
     _schema("use_skill", "Activate a skill's instructions for this run.",
             {"name": _STR}, ["name"]),
@@ -183,8 +217,10 @@ def _parse_action(text: str) -> dict[str, Any] | None:
     return None
 
 
-def _run_tool(action: dict[str, Any], on_event: EventCallback) -> str:
+def _run_tool(action: dict[str, Any], on_event: EventCallback,
+              ctx: dict[str, Any] | None = None) -> str:
     tool = (action.get("tool") or "").strip().lower()
+    ctx = ctx or {}
 
     if tool == "web_search":
         q = (action.get("query") or "").strip()
@@ -219,7 +255,9 @@ def _run_tool(action: dict[str, Any], on_event: EventCallback) -> str:
         fact = (action.get("fact") or "").strip()
         kind = (action.get("kind") or "fact").strip()
         on_event({"type": "tool", "tool": "remember", "fact": fact})
-        return memory.remember(fact, kind=kind if kind in ("fact", "preference") else "fact")
+        return memory.remember(
+            fact, kind=kind if kind in ("fact", "preference", "instruction")
+            else "fact")
 
     if tool == "recall_memory":
         q = (action.get("query") or "").strip()
@@ -382,6 +420,30 @@ def _run_tool(action: dict[str, Any], on_event: EventCallback) -> str:
         except Exception as exc:
             return f"Media suggestions failed: {exc}"
 
+    if tool == "search_sessions":
+        q = (action.get("query") or "").strip()
+        on_event({"type": "tool", "tool": "search_sessions", "query": q})
+        return sessions.format_results(sessions.search(q))
+
+    if tool == "delegate":
+        subtask = (action.get("task") or "").strip()
+        on_event({"type": "tool", "tool": "delegate", "fact": subtask[:120]})
+        if not subtask:
+            return "Delegate needs a 'task' describing the subtask."
+        if int(ctx.get("depth") or 0) >= 1:
+            return ("Delegation depth limit reached — a sub-agent cannot "
+                    "delegate further. Do this part yourself with your "
+                    "other tools.")
+        sub = run_agent(
+            subtask,
+            max_steps=4,
+            on_event=on_event,
+            source="delegate",
+            ceiling=ctx.get("ceiling"),
+            _depth=int(ctx.get("depth") or 0) + 1,
+        )
+        return f"Sub-agent result:\n{sub.get('answer') or '(no answer)'}"
+
     if tool == "list_skills":
         on_event({"type": "tool", "tool": "list_skills"})
         found = skills.list_skills()
@@ -424,28 +486,73 @@ def run_agent(
     *,
     max_steps: int = MAX_STEPS_DEFAULT,
     on_event: Optional[EventCallback] = None,
+    source: str = "interactive",
+    ceiling: str | None = None,
+    _depth: int = 0,
+    resume_digest: str = "",
 ) -> dict[str, Any]:
-    """Run the multi-step agent. Returns {answer, steps, tools_used}."""
+    """Run the multi-step agent.
+
+    Returns {answer, steps, tools_used, run_id, trace}.
+
+    v4: `source` ("interactive" | "scheduled" | "webhook" |
+    "delegate" | …) sets the policy ceiling for tool tiers;
+    `resume_digest` seeds the run with a previous run's compressed
+    transcript so an interrupted run can continue. Every run is
+    recorded in runs.py (trace) and sessions.py (searchable log).
+    """
     emit = on_event or (lambda e: None)
     task = (task or "").strip()
     if not task:
-        return {"answer": "Please provide a task.", "steps": [], "tools_used": []}
+        return {"answer": "Please provide a task.", "steps": [],
+                "tools_used": [], "run_id": None, "trace": []}
 
     emit({"type": "agent_start", "task": task})
+    cap = ceiling or policy.ceiling_for(source)
+    run_id = runs.start(task, source)
+    trace: list[dict[str, Any]] = []
+    steps: list[str] = []
+    tools_used: list[str] = []
+
+    def _record(entry: dict[str, Any]) -> None:
+        trace.append(entry)
+        try:
+            runs.add_trace(run_id, entry)
+        except Exception:
+            pass  # tracing is best-effort; never break a run over it
+
+    def _done(status: str, answer: str, digest: str = "") -> dict[str, Any]:
+        try:
+            runs.finish(run_id, status, answer, digest=digest)
+        except Exception:
+            pass
+        try:
+            sessions.log(source, task, answer, tools_used)
+        except Exception:
+            pass
+        return {"answer": answer, "steps": steps,
+                "tools_used": tools_used, "run_id": run_id,
+                "trace": trace}
 
     system = SYSTEM.format(
         memory=memory.summary_for_prompt(),
         goals=goals.summary_for_prompt(),
+        instructions=memory.instructions_block(),
     )
     transcript: list[str] = [f"User task: {task}"]
-    steps: list[str] = []
-    tools_used: list[str] = []
+    if resume_digest:
+        transcript.append(
+            "Context from a previous unfinished run of this task "
+            "(continue from it, do not repeat finished steps):\n"
+            + resume_digest)
     skill_context: list[str] = []  # instructions from use_skill, kept all run
+    ctx = {"source": source, "ceiling": cap, "depth": _depth}
 
     for i in range(1, max_steps + 1):
+        view = context_mod.maybe_compress(transcript)
         user_msg = (
             "Conversation so far:\n"
-            + "\n".join(transcript[-12:])
+            + "\n".join(view)
             + (("\n\n" + "\n\n".join(skill_context)) if skill_context else "")
             + f"\n\nStep {i}/{max_steps}. Choose the next tool JSON (or finish)."
         )
@@ -459,14 +566,14 @@ def run_agent(
                 "usual cause; wait a minute and re-run."
             )
             emit({"type": "error", "message": answer})
-            return {"answer": answer, "steps": steps, "tools_used": tools_used}
+            return _done("error", answer)
         if raw is None:
             answer = (
                 "No LLM key configured. Set GROQ_API_KEY or HF_TOKEN to run "
                 "the tool-using agent. You can still use ask/reply/browse."
             )
             emit({"type": "error", "message": answer})
-            return {"answer": answer, "steps": steps, "tools_used": tools_used}
+            return _done("error", answer)
 
         if not raw.strip():
             # empty model response (some free models return blank content
@@ -479,6 +586,8 @@ def run_agent(
             )
             emit({"type": "tool_result", "tool": "retry",
                   "preview": "empty model response"})
+            _record({"step": i, "tool": "retry",
+                     "observation": "empty model response", "ms": 0})
             continue
 
         action = _parse_action(raw)
@@ -486,22 +595,41 @@ def run_agent(
             # model returned prose — treat as final answer
             steps.append(f"step {i}: model returned final text")
             emit({"type": "agent_done", "answer": raw.strip()})
-            return {"answer": raw.strip(), "steps": steps, "tools_used": tools_used}
+            return _done("done", raw.strip())
 
         tool = (action.get("tool") or "").lower()
         tools_used.append(tool)
         steps.append(f"step {i}: {tool}")
+        args_preview = json.dumps(
+            {k: v for k, v in action.items() if k != "tool"},
+            ensure_ascii=False)[:200]
 
         if tool == "finish":
             answer = (action.get("answer") or "").strip() or "Task complete."
+            _record({"step": i, "tool": "finish", "args": args_preview,
+                     "observation": answer[:300], "ms": 0})
             emit({"type": "agent_done", "answer": answer})
-            return {"answer": answer, "steps": steps, "tools_used": tools_used}
+            return _done("done", answer)
 
-        try:
-            observation = _run_tool(action, emit)
-        except Exception as exc:
-            # one failing tool (e.g. storage error) must not kill the run
-            observation = f"Tool {tool} failed: {exc}"
+        # Policy gate (v4): fail closed on tools above this run's tier
+        # ceiling — e.g. unattended runs may not drive the browser.
+        allowed, reason = policy.check(tool, source, ceiling=cap)
+        started = time.monotonic()
+        if not allowed:
+            observation = reason
+            emit({"type": "policy_block", "tool": tool, "reason": reason})
+            _record({"step": i, "tool": tool, "args": args_preview,
+                     "observation": observation[:300], "ms": 0,
+                     "blocked": True})
+        else:
+            try:
+                observation = _run_tool(action, emit, ctx)
+            except Exception as exc:
+                # one failing tool (e.g. storage error) must not kill the run
+                observation = f"Tool {tool} failed: {exc}"
+            _record({"step": i, "tool": tool, "args": args_preview,
+                     "observation": observation[:300],
+                     "ms": int((time.monotonic() - started) * 1000)})
         if tool == "use_skill":
             rec = skills.load_skill((action.get("name") or "").strip())
             if rec:
@@ -514,10 +642,36 @@ def run_agent(
         transcript.append(f"Observation: {observation[:3000]}")
         emit({"type": "tool_result", "tool": tool, "preview": observation[:400]})
 
-    # max steps reached
+    # max steps reached — checkpoint a digest so the run can resume
     answer = (
         "Reached the step limit without a finish call. Partial progress is in "
         "the steps above. Re-run with a narrower task or higher max_steps."
     )
+    digest = "\n".join(context_mod.maybe_compress(transcript))
     emit({"type": "agent_done", "answer": answer})
-    return {"answer": answer, "steps": steps, "tools_used": tools_used}
+    return _done("step_limit", answer, digest=digest)
+
+
+def resume_run(run_id: str, follow_up: str = "",
+               max_steps: int = MAX_STEPS_DEFAULT,
+               on_event: Optional[EventCallback] = None) -> dict[str, Any]:
+    """Continue an unfinished run (step_limit / error) with its stored
+    context digest. Returns the new run's result, with resumed_from
+    set on the new run record."""
+    run = runs.get(run_id)
+    if run is None:
+        raise KeyError(f"Run not found: {run_id}")
+    task = run.get("task") or ""
+    extra = (follow_up or "").strip()
+    if extra:
+        task = f"{task}\n\nFollow-up instruction: {extra}"
+    result = run_agent(task, max_steps=max_steps, on_event=on_event,
+                       source="interactive",
+                       resume_digest=run.get("digest") or "")
+    if result.get("run_id"):
+        try:
+            runs.mark_resumed_from(result["run_id"], run_id)
+        except Exception:
+            pass
+    result["resumed_from"] = run_id
+    return result

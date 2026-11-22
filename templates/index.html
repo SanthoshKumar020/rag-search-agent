@@ -171,6 +171,7 @@
         <select id="memory-kind">
           <option value="fact">fact</option>
           <option value="preference">preference</option>
+          <option value="instruction">instruction (always followed)</option>
         </select>
         <button id="memory-add" type="button">Remember</button>
       </div>
@@ -200,6 +201,16 @@
     <details id="activity-panel" class="card">
       <summary>📜 Activity</summary>
       <ul id="activity-list" class="history-list"></ul>
+    </details>
+
+    <details id="runs-panel" class="card">
+      <summary>🧭 Runs — traces &amp; resume</summary>
+      <p class="muted">Every agent run is recorded with a step-by-step trace
+        (tool, timing, policy blocks). Runs that hit the step limit can be
+        resumed — the follow-up run continues from the stored context.</p>
+      <ul id="runs-list" class="history-list"></ul>
+      <div id="run-trace"></div>
+      <p id="runs-msg" class="muted"></p>
     </details>
 
     <footer>

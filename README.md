@@ -18,6 +18,47 @@ Everything runs on **free tiers** (Groq / HuggingFace). With no API keys it stil
 | **Goals** | Long-running objectives across sessions |
 | **Artifacts** | Saved documents/code the agent produces |
 
+## What's inside (v4) — the harness upgrade
+
+Patterns adapted from **Nous Research's Hermes Agent** and the
+GitHub `agent-harness` topic (full research + feature matrix:
+`~/workspace/research_notes/hermes-agent-harness-20261122/report.md`).
+The theme: the *harness* around the model — context, permissions,
+traces, recovery — is what makes an agent reliable.
+
+- **🧭 Run records, traces & resume** — every agent run (web, CLI,
+  scheduled, webhook, delegate) is stored in `runs.json` with a
+  structured step trace (tool, args, observation preview, duration,
+  policy blocks). A run that hits the step limit saves a context
+  digest and can be **resumed** — Runs panel ▶ resume,
+  `POST /api/runs/resume`, or `python agent.py runs resume <id>`.
+- **🗜️ Context compression** — long run transcripts are compressed
+  Hermes-style: head (the task) + recent tail protected, middle
+  replaced by a digest (LLM summary when a key exists, extractive
+  otherwise) instead of being silently truncated.
+- **🛡️ Tool risk tiers + policy gate** — every tool is tiered
+  `read` / `write` / `act` (see `GET /api/tools`). Interactive runs
+  may use all tiers; **unattended runs (scheduled tasks, webhook)
+  are capped at `write`** — they cannot drive the real browser.
+  Unknown tools fail closed. Payments/sending remain impossible:
+  no such tools exist.
+- **🤝 Delegation** — the `delegate` tool hands a self-contained
+  subtask to an isolated sub-agent (4-step budget, inherits the
+  caller's policy ceiling, cannot delegate further) and returns its
+  result.
+- **🔁 Model fallback chain** — on retryable errors (429/5xx),
+  generation walks an ordered chain of the allowlisted Groq models
+  with jittered backoff instead of failing the run.
+- **🗂️ Session log + search** — every run appends to a cross-session
+  log; the agent can search its own past work with the
+  `search_sessions` tool (`GET /api/sessions?q=…`,
+  `python agent.py sessions <query>`).
+- **📌 Standing instructions** — memory gains a third kind,
+  `instruction`: rules like "always answer concisely" that are
+  injected in full into every agent run, separate from facts and
+  preferences (Hermes' instruction-memory layer). Facts now carry
+  timestamps.
+
 ## What's inside (v3)
 
 Everything in v2, plus:
@@ -131,6 +172,10 @@ On Vercel, Ask/Reply work; Browse and heavy Agent tools that need Chromium stay 
 | `reminders.py` | Reminders store |
 | `tasks.py` | Scheduled tasks store + IST natural-language time parsing |
 | `run_tasks.py` | Local runner: polls and executes due tasks |
+| `policy.py` | Tool risk tiers + fail-closed gating by run source (v4) |
+| `context.py` | Transcript compression for long agent runs (v4) |
+| `runs.py` | Run records: structured traces + resume digests (v4) |
+| `sessions.py` | Cross-session log + keyword search (v4) |
 | `media.py` | Mood companion suggestions (iTunes / TVMaze / web search) |
 | `skills.py` + `skills/*.md` | Skill loader + starter skills |
 | `tools_extra.py` | Keyless tools: datetime, weather, news, Wikipedia, calculator, currency |

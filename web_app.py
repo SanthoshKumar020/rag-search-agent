@@ -18,6 +18,8 @@ import config
 import history
 import media
 import memory
+import runs as runs_mod
+import sessions as sessions_mod
 import skills
 import tasks as tasks_mod
 import tools_extra
@@ -165,6 +167,7 @@ def _memory_payload():
     return {
         "facts": data.get("facts") or [],
         "preferences": data.get("preferences") or {},
+        "instructions": data.get("instructions") or [],
         "lines": memory.recall("", limit=100),
     }
 
@@ -179,7 +182,7 @@ def api_memory_add():
     data = request.get_json(silent=True) or {}
     fact = (data.get("fact") or "").strip()
     kind = (data.get("kind") or "fact").strip()
-    if kind not in ("fact", "preference"):
+    if kind not in ("fact", "preference", "instruction"):
         kind = "fact"
     if not fact:
         return jsonify({"error": "Please enter a fact to remember."}), 400
@@ -368,7 +371,8 @@ def api_tasks_run():
         return jsonify({"error": "agent_core module not found."}), 501
     tasks_mod.mark_running(tid)
     try:
-        result = agent_core.run_agent(task["instruction"], max_steps=8)
+        result = agent_core.run_agent(task["instruction"], max_steps=8,
+                                      source="scheduled")
         answer = result.get("answer") or ""
         updated = tasks_mod.mark_done(tid, answer)
     except Exception as exc:
@@ -402,6 +406,53 @@ def api_tools():
     return jsonify({"tools": schemas, "count": len(schemas)})
 
 
+# ----------------------------------------------------------------------
+# v4: run records (traces + resume) and the cross-session log
+# ----------------------------------------------------------------------
+@app.get("/api/runs")
+def api_runs_list():
+    return jsonify({"runs": runs_mod.list_runs()})
+
+
+@app.get("/api/runs/<run_id>")
+def api_runs_get(run_id):
+    run = runs_mod.get(run_id)
+    if run is None:
+        return jsonify({"error": f"Run not found: {run_id}"}), 404
+    return jsonify({"run": run})
+
+
+@app.post("/api/runs/resume")
+def api_runs_resume():
+    """Continue an unfinished run with its stored context digest."""
+    data = request.get_json(silent=True) or {}
+    run_id = (data.get("id") or "").strip()
+    if not run_id:
+        return jsonify({"error": "Missing run id."}), 400
+    try:
+        import agent_core
+        result = agent_core.resume_run(
+            run_id, follow_up=data.get("follow_up") or "")
+    except KeyError as exc:
+        return jsonify({"error": str(exc)}), 404
+    except Exception as exc:
+        return jsonify({"error": f"Resume failed: {exc}"}), 502
+    return jsonify({
+        "answer": result.get("answer") or "",
+        "run_id": result.get("run_id"),
+        "resumed_from": run_id,
+        "tools_used": result.get("tools_used") or [],
+    })
+
+
+@app.get("/api/sessions")
+def api_sessions():
+    q = (request.args.get("q") or "").strip()
+    if q:
+        return jsonify({"sessions": sessions_mod.search(q)})
+    return jsonify({"sessions": sessions_mod.list_recent()})
+
+
 @app.post("/api/webhook/run")
 def api_webhook_run():
     """Trigger endpoint (n8n-style): POST {"task": "..."} runs the
@@ -418,7 +469,7 @@ def api_webhook_run():
         return jsonify({"error": "JSON body needs a 'task' string."}), 400
     try:
         import agent_core
-        result = agent_core.run_agent(task, max_steps=8)
+        result = agent_core.run_agent(task, max_steps=8, source="webhook")
     except Exception as exc:
         return jsonify({"error": f"Agent failed: {exc}"}), 502
     _record_activity(f"[webhook] {task}", result)
@@ -426,6 +477,7 @@ def api_webhook_run():
         "answer": result.get("answer") or "",
         "steps": result.get("steps") or [],
         "tools_used": result.get("tools_used") or [],
+        "run_id": result.get("run_id"),
     })
 
 
@@ -520,7 +572,7 @@ def _agent_oneshot(task: str):
         return jsonify({"error": "agent_core module not found.", "answer": "",
                         "sources": [], "steps": []}), 501
     try:
-        result = agent_core.run_agent(task, max_steps=8)
+        result = agent_core.run_agent(task, max_steps=8, source="web")
     except Exception as exc:
         return jsonify({
             "answer": "",
@@ -535,6 +587,7 @@ def _agent_oneshot(task: str):
         "sources": [],
         "steps": result.get("steps") or [],
         "tools_used": result.get("tools_used") or [],
+        "run_id": result.get("run_id"),
         "evidence_only": False,
         "mode": "agent",
     })
@@ -696,7 +749,7 @@ def _agent_stream(task: str, sse):
         def worker():
             try:
                 result = agent_core.run_agent(
-                    task, max_steps=8, on_event=events.put
+                    task, max_steps=8, on_event=events.put, source="web"
                 )
                 outcome["result"] = result
             except Exception as exc:
@@ -727,6 +780,7 @@ def _agent_stream(task: str, sse):
             "sources": [],
             "steps": result.get("steps") or [],
             "tools_used": result.get("tools_used") or [],
+            "run_id": result.get("run_id"),
             "evidence_only": False,
             "mode": "agent",
         })
