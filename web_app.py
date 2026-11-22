@@ -13,13 +13,17 @@ import os
 
 import activity
 import agent as pipeline
+import approvals
 import briefing
 import config
 import history
 import media
 import memory
+import nudges
+import proposals
 import runs as runs_mod
 import sessions as sessions_mod
+import settings as settings_mod
 import skills
 import tasks as tasks_mod
 import tools_extra
@@ -55,6 +59,22 @@ def _requested_model(data: dict) -> str | None:
     """Web model picker: only allowlisted Groq models, else None."""
     model = (data.get("model") or "").strip()
     return model if model in config.WEB_MODELS else None
+
+
+def _web_approve(request_info: dict) -> bool:
+    """Approval callback for web agent runs (v5): registers a pending
+    approval with the broker and blocks the agent worker thread until
+    the user clicks Approve/Deny in the UI (or the timeout denies).
+    The approval id travels to the UI on the approval_request SSE
+    event the agent loop emits just before calling this."""
+    granted, _ = approvals.request(
+        request_info.get("run_id"),
+        request_info.get("tool") or "",
+        args=request_info.get("args") or "",
+        tier=request_info.get("tier") or "act",
+        approval_id=request_info.get("id"),
+    )
+    return granted
 
 
 def _record(mode: str, query: str, answer: str, sources=None) -> None:
@@ -371,7 +391,8 @@ def api_tasks_run():
         return jsonify({"error": "agent_core module not found."}), 501
     tasks_mod.mark_running(tid)
     try:
-        result = agent_core.run_agent(task["instruction"], max_steps=8,
+        result = agent_core.run_agent(task["instruction"],
+                                      max_steps=settings_mod.max_steps(),
                                       source="scheduled")
         answer = result.get("answer") or ""
         updated = tasks_mod.mark_done(tid, answer)
@@ -453,6 +474,111 @@ def api_sessions():
     return jsonify({"sessions": sessions_mod.list_recent()})
 
 
+# ----------------------------------------------------------------------
+# v5: interactive approvals, skill proposals, memory nudges, settings
+# ----------------------------------------------------------------------
+@app.get("/api/approvals")
+def api_approvals_list():
+    return jsonify({"approvals": approvals.list_pending()})
+
+
+@app.post("/api/approvals/<approval_id>/decide")
+def api_approvals_decide(approval_id):
+    data = request.get_json(silent=True) or {}
+    if "approved" not in data:
+        return jsonify({"error": "JSON body needs 'approved': true/false."}), 400
+    decided = approvals.decide(approval_id, bool(data.get("approved")))
+    if decided is None:
+        return jsonify({"error": "Approval not found or already decided."}), 404
+    return jsonify({"decided": decided})
+
+
+@app.get("/api/skill-proposals")
+def api_skill_proposals_list():
+    status = (request.args.get("status") or "").strip() or None
+    return jsonify({"proposals": proposals.list_proposals(status)})
+
+
+@app.post("/api/skill-proposals/<proposal_id>/accept")
+def api_skill_proposals_accept(proposal_id):
+    try:
+        result = proposals.accept(proposal_id)
+    except KeyError as exc:
+        return jsonify({"error": str(exc)}), 404
+    except ValueError as exc:
+        return jsonify({"error": str(exc)}), 400
+    except OSError:
+        return jsonify({
+            "error": ("This hosted server's filesystem is read-only — "
+                      "skills can only be created when running the app "
+                      "locally on your own computer."),
+            "error_code": "skills_readonly_hosted",
+        }), 501
+    return jsonify({**result, "skills": skills.list_skills(),
+                    "proposals": proposals.list_proposals()})
+
+
+@app.post("/api/skill-proposals/<proposal_id>/discard")
+def api_skill_proposals_discard(proposal_id):
+    try:
+        updated = proposals.discard(proposal_id)
+    except KeyError as exc:
+        return jsonify({"error": str(exc)}), 404
+    except ValueError as exc:
+        return jsonify({"error": str(exc)}), 400
+    return jsonify({"proposal": updated,
+                    "proposals": proposals.list_proposals()})
+
+
+@app.get("/api/nudges")
+def api_nudges_list():
+    return jsonify({"nudges": nudges.list_pending()})
+
+
+@app.post("/api/nudges/<nudge_id>/accept")
+def api_nudges_accept(nudge_id):
+    try:
+        updated = nudges.accept(nudge_id)
+    except KeyError as exc:
+        return jsonify({"error": str(exc)}), 404
+    except ValueError as exc:
+        return jsonify({"error": str(exc)}), 400
+    return jsonify({"nudge": updated, "nudges": nudges.list_pending(),
+                    **_memory_payload()})
+
+
+@app.post("/api/nudges/<nudge_id>/dismiss")
+def api_nudges_dismiss(nudge_id):
+    try:
+        updated = nudges.dismiss(nudge_id)
+    except KeyError as exc:
+        return jsonify({"error": str(exc)}), 404
+    except ValueError as exc:
+        return jsonify({"error": str(exc)}), 400
+    return jsonify({"nudge": updated, "nudges": nudges.list_pending()})
+
+
+@app.get("/api/settings")
+def api_settings_get():
+    return jsonify(settings_mod.public_view())
+
+
+@app.post("/api/settings")
+def api_settings_update():
+    data = request.get_json(silent=True) or {}
+    try:
+        settings_mod.update(data)
+    except ValueError as exc:
+        return jsonify({"error": str(exc)}), 400
+    except OSError:
+        return jsonify({
+            "error": ("This hosted server's storage is ephemeral — "
+                      "settings reset when the instance restarts."),
+            "error_code": "settings_ephemeral_hosted",
+        }), 501
+    return jsonify(settings_mod.public_view())
+
+
 @app.post("/api/webhook/run")
 def api_webhook_run():
     """Trigger endpoint (n8n-style): POST {"task": "..."} runs the
@@ -460,7 +586,7 @@ def api_webhook_run():
     var is set, the request must send it as the X-Agent-Token header.
     The agent's safety rules apply — a webhook can never make it pay
     or send real messages."""
-    token = os.environ.get("AGENT_WEBHOOK_TOKEN", "").strip()
+    token = settings_mod.webhook_token()
     if token and request.headers.get("X-Agent-Token", "") != token:
         return jsonify({"error": "Invalid or missing X-Agent-Token."}), 401
     data = request.get_json(silent=True) or {}
@@ -469,7 +595,8 @@ def api_webhook_run():
         return jsonify({"error": "JSON body needs a 'task' string."}), 400
     try:
         import agent_core
-        result = agent_core.run_agent(task, max_steps=8, source="webhook")
+        result = agent_core.run_agent(
+            task, max_steps=settings_mod.max_steps(), source="webhook")
     except Exception as exc:
         return jsonify({"error": f"Agent failed: {exc}"}), 502
     _record_activity(f"[webhook] {task}", result)
@@ -572,7 +699,11 @@ def _agent_oneshot(task: str):
         return jsonify({"error": "agent_core module not found.", "answer": "",
                         "sources": [], "steps": []}), 501
     try:
-        result = agent_core.run_agent(task, max_steps=8, source="web")
+        # Classic (non-streamed) endpoint: no approval round-trip is
+        # possible inside a single request, so it keeps v4 behaviour.
+        # The streamed UI is the approval path (see _agent_stream).
+        result = agent_core.run_agent(
+            task, max_steps=settings_mod.max_steps(), source="web")
     except Exception as exc:
         return jsonify({
             "answer": "",
@@ -749,7 +880,9 @@ def _agent_stream(task: str, sse):
         def worker():
             try:
                 result = agent_core.run_agent(
-                    task, max_steps=8, on_event=events.put, source="web"
+                    task, max_steps=settings_mod.max_steps(),
+                    on_event=events.put, source="web",
+                    approve=_web_approve,
                 )
                 outcome["result"] = result
             except Exception as exc:

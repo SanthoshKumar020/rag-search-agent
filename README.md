@@ -18,6 +18,61 @@ Everything runs on **free tiers** (Groq / HuggingFace). With no API keys it stil
 | **Goals** | Long-running objectives across sessions |
 | **Artifacts** | Saved documents/code the agent produces |
 
+## What's inside (v5) — approvals, learning loop, dashboard
+
+The remaining Hermes patterns that fit a single-user Flask app, plus
+a full UI rebuild:
+
+- **✋ Interactive approvals** — in web Agent mode, when the agent
+  wants an `act`-tier tool (the real browser), the run *pauses* and
+  the UI shows an Approve / Deny prompt (`approvals.py` broker +
+  `POST /api/approvals/<id>/decide`). The CLI asks y/n instead. A
+  denial — or ignoring the prompt until it times out — fails closed:
+  the tool returns a refusal observation and the agent adapts.
+  Unattended runs are unchanged: the policy ceiling still blocks
+  act-tier tools outright, approvals never substitute for it.
+- **🧩 Self-improving skills, human-gated** — after a successful run
+  of 3+ tool steps, the agent distils the trace into a *skill
+  proposal*; it can also propose one mid-run with the new
+  `propose_skill` tool (30 tools total). Proposals land in the
+  Skills panel — Accept writes a real skill via the same validated
+  path as the manual form, Discard closes it. **Nothing is ever
+  auto-applied** (`proposals.py`).
+- **🌙 Task result delivery** — scheduled-task results now surface
+  where you'll see them: the Briefing gains an **Overnight results**
+  section (tasks finished since the previous briefing, shown once),
+  and each task's last result is inline in the Tasks panel.
+- **📡 Streaming run view** — Agent mode streams a step timeline:
+  each tool call appears live with its tier badge (read / write /
+  act), result previews, 🚫 markers for policy-blocked or denied
+  steps, and ⏸ while an approval is pending.
+- **💡 Memory nudges** — when recent tasks contain a durable
+  first-person statement ("I prefer…", "I live in…", "always…"),
+  the Memory panel offers a dismissible suggestion card. One click
+  saves it as a fact / preference / instruction; nothing is saved
+  without the click (`nudges.py`).
+- **🎛️ Dashboard UI** — a three-column app: left sidebar (brand,
+  health, mode switcher incl. **Friend**, panel nav), centre
+  conversation (streamed timeline + composer, `Ctrl+K` to focus,
+  `Ctrl+Enter` to run), right tabbed panels (Briefing, Tasks, Runs
+  + session search, Memory, Skills, Mood, Ideas, History, Activity,
+  Settings). One design system: CSS variables, dark default with a
+  persisted light theme, cards, tier badges, status pills, empty
+  states, skeletons, toasts, relative timestamps, and list search
+  for runs / sessions / memory. Fully usable on a phone (single
+  column, sticky composer).
+- **⚙️ Settings panel** — ask/reply model, agent max steps (1–20),
+  theme, and the webhook token (masked display; a settings token
+  takes precedence over `AGENT_WEBHOOK_TOKEN`). Stored in
+  `settings.json` in the data dir — ephemeral on hosted servers,
+  like memory.
+
+Still skipped, honestly: run cancellation (runs are single
+synchronous requests — the approval timeout is the escape hatch),
+MCP servers / messaging gateways / sandbox backends (always-on
+processes), and multi-agent teams (single-level `delegate` covers
+the useful core). See the v4 research matrix for the full reasoning.
+
 ## What's inside (v4) — the harness upgrade
 
 Patterns adapted from **Nous Research's Hermes Agent** and the
@@ -140,7 +195,11 @@ python agent.py browse "Open example.com and tell me the page title"
 python web_app.py   # http://127.0.0.1:5000
 ```
 
-Modes: **Ask** / **Reply** / **Browse** / **Agent**. Live step streaming via SSE.
+A dashboard: sidebar modes **Ask** / **Reply** / **Browse** /
+**Agent** / **Friend**, a conversation column with a live streamed
+step timeline, and tabbed panels (Briefing, Tasks, Runs, Memory,
+Skills, Mood, Ideas, History, Activity, Settings). In Agent mode,
+act-tier tool calls pause for an Approve / Deny prompt.
 
 On Vercel, Ask/Reply work; Browse and heavy Agent tools that need Chromium stay local.
 
@@ -173,6 +232,10 @@ On Vercel, Ask/Reply work; Browse and heavy Agent tools that need Chromium stay 
 | `tasks.py` | Scheduled tasks store + IST natural-language time parsing |
 | `run_tasks.py` | Local runner: polls and executes due tasks |
 | `policy.py` | Tool risk tiers + fail-closed gating by run source (v4) |
+| `approvals.py` | Interactive approval broker for act-tier tools (v5) |
+| `proposals.py` | Skill proposals store — accept/discard lifecycle (v5) |
+| `nudges.py` | Memory suggestions detected in recent tasks (v5) |
+| `settings.py` | User settings: model, max steps, theme, webhook token (v5) |
 | `context.py` | Transcript compression for long agent runs (v4) |
 | `runs.py` | Run records: structured traces + resume digests (v4) |
 | `sessions.py` | Cross-session log + keyword search (v4) |

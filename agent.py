@@ -316,11 +316,32 @@ def cmd_agent(args) -> int:
             log(f"tool: {ev.get('tool')} {ev.get('query') or ev.get('url') or ev.get('task') or ''}".strip())
         elif t == "tool_result":
             log(f"result ({ev.get('tool')}): {(ev.get('preview') or '')[:80]}")
+        elif t == "approval_request":
+            log(f"approval requested: {ev.get('tool')} "
+                f"({ev.get('tier')}) — see the prompt below")
+        elif t == "approval_decided":
+            log(f"approval {'granted' if ev.get('approved') else 'DENIED'}: "
+                f"{ev.get('tool')}")
+        elif t == "skill_proposed":
+            log(f"skill proposed: {ev.get('name')} "
+                "(pending — accept it in the web UI Skills panel)")
         elif t == "agent_done":
             log("agent finished")
 
+    def _cli_approve(request_info: dict) -> bool:
+        """Interactive approvals (v5): act-tier tools ask y/n."""
+        print(f"\n⚠️  Approval requested — tool '{request_info.get('tool')}' "
+              f"(tier: {request_info.get('tier')})")
+        print(f"   args: {request_info.get('args') or ''}")
+        try:
+            answer = input("   Approve this step? [y/N] ").strip().lower()
+        except EOFError:
+            answer = ""
+        return answer in ("y", "yes")
+
     result = agent_core.run_agent(
-        task, max_steps=args.max_steps, on_event=_cli_event
+        task, max_steps=args.max_steps, on_event=_cli_event,
+        approve=_cli_approve,
     )
     try:
         import activity

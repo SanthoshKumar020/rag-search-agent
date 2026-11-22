@@ -1,223 +1,364 @@
 <!DOCTYPE html>
-<html lang="en">
+<html lang="en" data-theme="dark">
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
-  <title>Search + RAG + Personal Agent</title>
+  <title>Personal Agent — Search · RAG · Tools</title>
+  <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'%3E%3Ccircle cx='42' cy='42' r='30' fill='none' stroke='%234f9cf9' stroke-width='10'/%3E%3Cline x1='64' y1='64' x2='90' y2='90' stroke='%234f9cf9' stroke-width='12' stroke-linecap='round'/%3E%3C/svg%3E">
+  <script>
+    // Set the theme before first paint (no flash): localStorage wins,
+    // then the server-side default rendered by settings.
+    (function () {
+      try {
+        var t = localStorage.getItem("pa-theme");
+        if (t === "light" || t === "dark") {
+          document.documentElement.setAttribute("data-theme", t);
+        }
+      } catch (e) { /* private mode */ }
+    })();
+  </script>
   <link rel="stylesheet" href="{{ url_for('static', filename='style.css') }}">
 </head>
 <body>
-  <main class="wrap">
-    <header>
-      <h1>🔎 Personal Search + Agent</h1>
-      <p class="sub">Ask, draft replies, drive a real browser, or run a <strong>Muse-inspired agent</strong>
-        with memory, goals, and artifacts — grounded in live web evidence.</p>
-    </header>
+  <div class="app">
 
-    <section id="briefing" class="card">
-      <h2 class="panel-title">☀️ Briefing</h2>
-      <div id="briefing-body"><p class="muted">Loading briefing…</p></div>
+    <!-- ============ SIDEBAR ============ -->
+    <aside class="sidebar">
+      <div class="brand">
+        <span class="brand-mark" aria-hidden="true">
+          <svg viewBox="0 0 100 100" width="30" height="30"><circle cx="42" cy="42" r="30" fill="none" stroke="currentColor" stroke-width="10"/><line x1="64" y1="64" x2="90" y2="90" stroke="currentColor" stroke-width="12" stroke-linecap="round"/></svg>
+        </span>
+        <span class="brand-text">
+          <strong>Personal Agent</strong>
+          <small>Search · RAG · Tools</small>
+        </span>
+      </div>
+
+      <div class="health" title="Server status">
+        <span id="health-dot" class="health-dot"></span>
+        <span id="health-text">checking…</span>
+      </div>
+
+      <p class="nav-label">Mode</p>
+      <nav class="mode-nav" role="radiogroup" aria-label="Mode">
+        <button type="button" class="mode-btn active" data-mode="ask" role="radio" aria-checked="true"><span class="mode-ico">❓</span>Ask</button>
+        <button type="button" class="mode-btn" data-mode="reply" role="radio" aria-checked="false"><span class="mode-ico">✉️</span>Reply</button>
+        <button type="button" class="mode-btn" data-mode="browse" role="radio" aria-checked="false"><span class="mode-ico">🖱️</span>Browse</button>
+        <button type="button" class="mode-btn" data-mode="agent" role="radio" aria-checked="false"><span class="mode-ico">🤖</span>Agent</button>
+        <button type="button" class="mode-btn" data-mode="friend" role="radio" aria-checked="false"><span class="mode-ico">💛</span>Friend</button>
+      </nav>
+
+      <p class="nav-label">Panels</p>
+      <nav class="panel-nav" aria-label="Panels">
+        <button type="button" class="panel-link active" data-panel="briefing">☀️ Briefing</button>
+        <button type="button" class="panel-link" data-panel="tasks">⏰ Tasks</button>
+        <button type="button" class="panel-link" data-panel="runs">🧭 Runs</button>
+        <button type="button" class="panel-link" data-panel="memory">🧠 Memory</button>
+        <button type="button" class="panel-link" data-panel="skills">🧩 Skills</button>
+        <button type="button" class="panel-link" data-panel="mood">🎵 Mood</button>
+        <button type="button" class="panel-link" data-panel="ideas">💡 Ideas</button>
+        <button type="button" class="panel-link" data-panel="history">🕘 History</button>
+        <button type="button" class="panel-link" data-panel="activity">📜 Activity</button>
+        <button type="button" class="panel-link" data-panel="settings">⚙️ Settings</button>
+      </nav>
+
+      <div class="side-foot">
+        <button type="button" id="theme-toggle" class="small-btn" title="Toggle light / dark theme">🌙 Dark</button>
+        <p class="side-note">Free tiers (Groq / HuggingFace). No payments, no real email — by design.</p>
+      </div>
+    </aside>
+
+    <!-- ============ MAIN COLUMN ============ -->
+    <main class="main">
+      <section id="friend-view" class="friend-view hidden">
+        <h2 id="friend-greeting">Hey 💛</h2>
+        <p class="muted">Tell me how you're feeling in the composer below — I'll respond like a
+          friend first, then find songs, shows and movies to match. Or tap a mood:</p>
+        <div class="mood-chips" id="friend-moods">
+          <button type="button" class="chip" data-mood="sad">😔 Sad</button>
+          <button type="button" class="chip" data-mood="stressed">😮‍💨 Stressed</button>
+          <button type="button" class="chip" data-mood="lonely">🌙 Lonely</button>
+          <button type="button" class="chip" data-mood="happy">😄 Happy</button>
+          <button type="button" class="chip" data-mood="romantic">❤️ Romantic</button>
+          <button type="button" class="chip" data-mood="energetic">⚡ Energetic</button>
+          <button type="button" class="chip" data-mood="bored">🥱 Bored</button>
+          <button type="button" class="chip" data-mood="relaxed">😌 Relaxed</button>
+        </div>
+      </section>
+
+      <section id="cards" class="cards-row" aria-label="Live cards">
+        <div class="mini-card" id="card-weather"><div class="skeleton sk-line"></div><div class="skeleton sk-line short"></div></div>
+        <div class="mini-card" id="card-fx"><div class="skeleton sk-line"></div><div class="skeleton sk-line short"></div></div>
+        <div class="mini-card" id="card-news"><div class="skeleton sk-line"></div><div class="skeleton sk-line short"></div></div>
+      </section>
+
+      <div id="thread" class="thread" aria-live="polite">
+        <div id="empty-state" class="empty-state">
+          <h2>What shall we do?</h2>
+          <p class="muted">Ask a question, draft a reply, drive a browser, or hand the agent a
+            multi-step task. Try one:</p>
+          <div class="example-chips">
+            <button type="button" class="chip example" data-mode="ask" data-text="What is Delta Lake medallion architecture?">What is Delta Lake medallion architecture?</button>
+            <button type="button" class="chip example" data-mode="agent" data-text="Use the daily-briefing skill and brief me.">Use the daily-briefing skill and brief me</button>
+            <button type="button" class="chip example" data-mode="agent" data-text="Tomorrow 11:00 am, check trains from Chennai to Madurai and note the options">Tomorrow 11 am — check trains to Madurai</button>
+            <button type="button" class="chip example" data-mode="friend" data-text="I feel sad">I feel sad 💛</button>
+          </div>
+          <p class="muted kbd-hint">Tip: <kbd>Ctrl</kbd>+<kbd>K</kbd> focuses the composer · <kbd>Ctrl</kbd>+<kbd>Enter</kbd> runs</p>
+        </div>
+      </div>
+
+      <section class="composer card-flat">
+        <p id="browse-hint" class="hint hidden">
+          Browse opens real Chromium and follows instructions step by step.
+          It will <strong>never submit payment</strong>. Local only (not on Vercel).
+        </p>
+        <div id="browse-hosted" class="hosted-card hidden">
+          <strong>🖱️ Browse mode runs on your own computer</strong>
+          <p>Browse mode needs a real Chromium browser, which this hosted server
+            can't run. It works when you run this app on your own computer:</p>
+          <ol>
+            <li><code>pip install 'browser-use==1.0.8'</code></li>
+            <li><code>playwright install chromium</code></li>
+            <li>Put your free Groq key in <code>.env</code></li>
+            <li>Run the app locally and choose Browse</li>
+          </ol>
+        </div>
+        <p id="agent-hint" class="hint hidden">
+          Agent mode uses tools: web search, fetch, weather, news, Wikipedia, calculator,
+          currency, reminders, scheduled tasks, mood suggestions, skills, memory, goals,
+          artifacts, delegation — and browse (with your approval).
+          Examples: <em>Use the daily-briefing skill and brief me.</em> ·
+          <em>Tomorrow 11:00 am, check trains to Madurai.</em> · <em>I feel sad.</em>
+        </p>
+        <div id="status" class="status hidden">
+          <span class="spinner"></span>
+          <span id="status-text">Working…</span>
+        </div>
+        <p id="error" class="error hidden"></p>
+        <textarea id="query" rows="3"
+          placeholder="e.g. What is Delta Lake medallion architecture?"></textarea>
+        <div class="composer-row">
+          <button id="mic" type="button" class="small-btn">🎤 Speak</button>
+          <span id="voice-status" class="muted"></span>
+          <span class="spacer"></span>
+          <label class="toggle" id="web-toggle-wrap">
+            <input type="checkbox" id="use-web" checked>
+            <span>Use web search</span>
+          </label>
+          <label class="toggle" id="model-wrap">
+            <span>Model</span>
+            <select id="model">
+              <option value="openai/gpt-oss-120b" selected>GPT-OSS 120B (default)</option>
+              <option value="openai/gpt-oss-20b">GPT-OSS 20B (fast)</option>
+              <option value="qwen/qwen3.8-27b">Qwen 3.8 27B</option>
+            </select>
+          </label>
+          <button id="go" type="button" class="primary">Run</button>
+        </div>
+      </section>
+    </main>
+
+    <!-- ============ PANELS COLUMN ============ -->
+    <section class="panels" id="panels">
+      <div class="panel-tabs" role="tablist" aria-label="Panels">
+        <button type="button" class="panel-tab active" data-panel="briefing" role="tab">☀️ Briefing</button>
+        <button type="button" class="panel-tab" data-panel="tasks" role="tab">⏰ Tasks</button>
+        <button type="button" class="panel-tab" data-panel="runs" role="tab">🧭 Runs</button>
+        <button type="button" class="panel-tab" data-panel="memory" role="tab">🧠 Memory</button>
+        <button type="button" class="panel-tab" data-panel="skills" role="tab">🧩 Skills</button>
+        <button type="button" class="panel-tab" data-panel="mood" role="tab">🎵 Mood</button>
+        <button type="button" class="panel-tab" data-panel="ideas" role="tab">💡 Ideas</button>
+        <button type="button" class="panel-tab" data-panel="history" role="tab">🕘 History</button>
+        <button type="button" class="panel-tab" data-panel="activity" role="tab">📜 Activity</button>
+        <button type="button" class="panel-tab" data-panel="settings" role="tab">⚙️ Settings</button>
+      </div>
+
+      <div class="panel-body">
+        <!-- Briefing -->
+        <section class="panel active" data-panel-body="briefing">
+          <h2 class="panel-title">☀️ Briefing</h2>
+          <div id="briefing-body"><div class="skeleton sk-line"></div><div class="skeleton sk-line"></div><div class="skeleton sk-line short"></div></div>
+          <div id="overnight-wrap" class="hidden">
+            <h3 class="sub-title">🌙 Overnight results</h3>
+            <p class="muted">Scheduled tasks that finished since your last briefing:</p>
+            <ul id="overnight-list" class="clean-list"></ul>
+          </div>
+        </section>
+
+        <!-- Tasks -->
+        <section class="panel" data-panel-body="tasks">
+          <h2 class="panel-title">⏰ Scheduled tasks</h2>
+          <ul id="tasks-list" class="clean-list"></ul>
+          <div class="form-stack">
+            <input id="task-instruction" type="text"
+              placeholder="Instruction… e.g. Check trains to Madurai and note the options">
+            <input id="task-when" type="text"
+              placeholder="When… e.g. tomorrow 11:00 am">
+            <button id="task-add" type="button" class="primary">Schedule</button>
+          </div>
+          <p id="task-msg" class="muted">Tasks run automatically while the app runs on your own
+            computer (<code>python run_tasks.py</code>). On this hosted page they are stored and
+            can be run on demand with ▶. A scheduled task can never pay or send real messages.</p>
+        </section>
+
+        <!-- Runs -->
+        <section class="panel" data-panel-body="runs">
+          <h2 class="panel-title">🧭 Runs — traces &amp; resume</h2>
+          <p class="muted">Every agent run is recorded with a step-by-step trace
+            (tool, tier, timing, policy blocks, approvals). Runs that hit the step
+            limit can be resumed from their stored context.</p>
+          <input id="runs-search" type="search" class="search-box" placeholder="🔎 Filter runs by task, tool, status…">
+          <ul id="runs-list" class="clean-list"></ul>
+          <div id="run-trace"></div>
+          <p id="runs-msg" class="muted"></p>
+          <h3 class="sub-title">🗂️ Sessions</h3>
+          <div class="row-inline">
+            <input id="sessions-search" type="search" class="search-box" placeholder="Search past sessions…">
+            <button id="sessions-go" type="button" class="small-btn">Search</button>
+          </div>
+          <ul id="sessions-list" class="clean-list"></ul>
+        </section>
+
+        <!-- Memory -->
+        <section class="panel" data-panel-body="memory">
+          <h2 class="panel-title">🧠 Memory</h2>
+          <div id="nudges-wrap" class="hidden">
+            <h3 class="sub-title">💡 Suggestions</h3>
+            <p class="muted">Things you mentioned that might be worth remembering.
+              Nothing is saved unless you click Save.</p>
+            <div id="nudges-list"></div>
+          </div>
+          <input id="memory-search" type="search" class="search-box" placeholder="🔎 Filter memory…">
+          <ul id="memory-list" class="clean-list"></ul>
+          <div class="form-stack">
+            <input id="memory-input" type="text"
+              placeholder="Add a fact or preference… e.g. city: Chennai">
+            <div class="row-inline">
+              <select id="memory-kind">
+                <option value="fact">fact</option>
+                <option value="preference">preference</option>
+                <option value="instruction">instruction (always followed)</option>
+              </select>
+              <button id="memory-add" type="button" class="primary">Remember</button>
+            </div>
+          </div>
+          <p id="memory-msg" class="muted"></p>
+        </section>
+
+        <!-- Skills -->
+        <section class="panel" data-panel-body="skills">
+          <h2 class="panel-title">🧩 Skills</h2>
+          <div id="proposals-wrap" class="hidden">
+            <h3 class="sub-title">📥 Skill proposals</h3>
+            <p class="muted">The agent distilled these from finished runs. A proposal
+              becomes a real skill only when you accept it.</p>
+            <div id="proposals-list"></div>
+          </div>
+          <ul id="skills-list" class="clean-list"></ul>
+          <p class="muted">In Agent mode, try: <em>“Use the interview-prep skill for Databricks questions.”</em></p>
+          <details class="create-skill">
+            <summary>➕ Create a skill</summary>
+            <div class="form-stack">
+              <input id="skill-name" type="text" placeholder="skill-name (lowercase slug, e.g. cover-letter)">
+              <input id="skill-desc" type="text" placeholder="One-line description">
+              <textarea id="skill-instructions" rows="4"
+                placeholder="Instructions the agent should follow when this skill is active…"></textarea>
+              <button id="skill-create" type="button" class="primary">Save skill</button>
+              <p id="skill-msg" class="muted"></p>
+            </div>
+          </details>
+        </section>
+
+        <!-- Mood -->
+        <section class="panel" data-panel-body="mood">
+          <h2 class="panel-title">💛 Mood — friend mode</h2>
+          <p class="muted">How are you feeling? Pick one and I'll find songs, shows and movies to match.</p>
+          <div class="mood-grid" id="mood-buttons">
+            <button type="button" class="chip mood-btn" data-mood="sad">😔 Sad</button>
+            <button type="button" class="chip mood-btn" data-mood="stressed">😮‍💨 Stressed</button>
+            <button type="button" class="chip mood-btn" data-mood="lonely">🌙 Lonely</button>
+            <button type="button" class="chip mood-btn" data-mood="happy">😄 Happy</button>
+            <button type="button" class="chip mood-btn" data-mood="romantic">❤️ Romantic</button>
+            <button type="button" class="chip mood-btn" data-mood="energetic">⚡ Energetic</button>
+            <button type="button" class="chip mood-btn" data-mood="bored">🥱 Bored</button>
+            <button type="button" class="chip mood-btn" data-mood="relaxed">😌 Relaxed</button>
+          </div>
+          <div id="mood-results"></div>
+        </section>
+
+        <!-- Ideas -->
+        <section class="panel" data-panel-body="ideas">
+          <h2 class="panel-title">💡 Ideas for today</h2>
+          <ul id="ideas-list" class="clean-list"></ul>
+        </section>
+
+        <!-- History -->
+        <section class="panel" data-panel-body="history">
+          <h2 class="panel-title">🕘 History</h2>
+          <ul id="history-list" class="clean-list"></ul>
+        </section>
+
+        <!-- Activity -->
+        <section class="panel" data-panel-body="activity">
+          <h2 class="panel-title">📜 Activity</h2>
+          <ul id="activity-list" class="clean-list"></ul>
+        </section>
+
+        <!-- Settings -->
+        <section class="panel" data-panel-body="settings">
+          <h2 class="panel-title">⚙️ Settings</h2>
+          <div class="form-stack">
+            <label class="field">
+              <span>Ask / Reply model</span>
+              <select id="settings-model"></select>
+            </label>
+            <label class="field">
+              <span>Agent max steps <small class="muted">(1–20, applies to web runs)</small></span>
+              <input id="settings-steps" type="number" min="1" max="20" step="1">
+            </label>
+            <label class="field">
+              <span>Theme</span>
+              <select id="settings-theme">
+                <option value="dark">🌙 Dark</option>
+                <option value="light">☀️ Light</option>
+              </select>
+            </label>
+            <div class="field">
+              <span>Webhook token <small class="muted">(for POST /api/webhook/run)</small></span>
+              <p id="webhook-state" class="muted">…</p>
+              <input id="settings-webhook" type="text" placeholder="Set a new token (leave empty to keep)">
+              <button id="webhook-clear" type="button" class="small-btn">Clear token</button>
+            </div>
+            <button id="settings-save" type="button" class="primary">Save settings</button>
+            <p id="settings-msg" class="muted"></p>
+            <p class="muted">The agent's own model is set by the <code>AGENT_MODEL</code>
+              environment variable. On hosted servers these settings are stored in
+              ephemeral storage and reset when the instance restarts.</p>
+          </div>
+        </section>
+      </div>
     </section>
+  </div>
 
-    <section id="cards" class="cards-row">
-      <div class="mini-card" id="card-weather"><p class="muted">🌡️ Loading…</p></div>
-      <div class="mini-card" id="card-fx"><p class="muted">💱 Loading…</p></div>
-      <div class="mini-card" id="card-news"><p class="muted">📰 Loading…</p></div>
-    </section>
-
-    <section class="card">
-      <div class="modes" role="radiogroup" aria-label="Mode">
-        <label>
-          <input type="radio" name="mode" value="ask" checked>
-          <span>Ask</span>
-        </label>
-        <label>
-          <input type="radio" name="mode" value="reply">
-          <span>Reply</span>
-        </label>
-        <label>
-          <input type="radio" name="mode" value="browse">
-          <span>Browse</span>
-        </label>
-        <label>
-          <input type="radio" name="mode" value="agent">
-          <span>Agent</span>
-        </label>
+  <!-- ============ APPROVAL MODAL ============ -->
+  <div id="approval-modal" class="modal-backdrop hidden" role="dialog" aria-modal="true" aria-labelledby="approval-title">
+    <div class="modal">
+      <h3 id="approval-title">⚠️ Approval requested</h3>
+      <p>The agent wants to use an <span class="tier-badge tier-act">act</span>-tier tool —
+        it acts outside the app:</p>
+      <p class="approval-tool-line"><strong id="approval-tool">browse</strong></p>
+      <pre id="approval-args" class="approval-args"></pre>
+      <p class="muted">Approving runs this one step. Denying tells the agent to
+        adapt without it. If you ignore this, it is denied automatically.</p>
+      <div class="modal-actions">
+        <button id="approval-deny" type="button" class="btn danger-outline">Deny</button>
+        <button id="approval-approve" type="button" class="btn primary">Approve</button>
       </div>
+    </div>
+  </div>
 
-      <textarea id="query" rows="4"
-        placeholder="e.g. What is Delta Lake medallion architecture?"></textarea>
-      <div class="voice-row">
-        <button id="mic" type="button" class="small-btn">🎤 Speak</button>
-        <span id="voice-status" class="muted"></span>
-      </div>
+  <div id="toasts" class="toasts" aria-live="polite"></div>
 
-      <div class="row">
-        <label class="toggle" id="web-toggle-wrap">
-          <input type="checkbox" id="use-web" checked>
-          <span>Use web search</span>
-        </label>
-        <label class="toggle" id="model-wrap">
-          <span>Model</span>
-          <select id="model">
-            <option value="openai/gpt-oss-120b" selected>GPT-OSS 120B (default)</option>
-            <option value="openai/gpt-oss-20b">GPT-OSS 20B (fast)</option>
-            <option value="qwen/qwen3.8-27b">Qwen 3.8 27B</option>
-          </select>
-        </label>
-        <button id="go" type="button">Run</button>
-      </div>
-
-      <p id="browse-hint" class="browse-hint hidden">
-        Browse opens real Chromium and follows instructions step by step.
-        It will <strong>never submit payment</strong>. Local only (not on Vercel).
-      </p>
-      <div id="browse-hosted" class="hosted-card hidden">
-        <strong>🖱️ Browse mode runs on your own computer</strong>
-        <p>Browse mode needs a real Chromium browser, which this hosted server
-          can't run. It works when you run this app on your own computer:</p>
-        <ol>
-          <li><code>pip install 'browser-use==1.0.8'</code></li>
-          <li><code>playwright install chromium</code></li>
-          <li>Put your free Groq key in <code>.env</code></li>
-          <li>Run the app locally and choose Browse</li>
-        </ol>
-      </div>
-      <p id="agent-hint" class="browse-hint hidden">
-        Agent mode uses tools: web search, fetch, weather, news, Wikipedia, calculator,
-        currency, reminders, scheduled tasks, mood suggestions, skills, memory, goals,
-        artifacts, optional browse.
-        Examples: <em>Use the daily-briefing skill and brief me.</em> ·
-        <em>Tomorrow 11:00 am, check trains to Madurai.</em> · <em>I feel sad.</em>
-      </p>
-
-      <div id="status" class="status hidden">
-        <span class="spinner"></span>
-        <span id="status-text">Working…</span>
-      </div>
-      <p id="error" class="error hidden"></p>
-    </section>
-
-    <section id="live" class="card hidden" aria-live="polite">
-      <div class="live-head">
-        <h2 id="live-title">🌐 Live activity</h2>
-        <span id="live-state" class="live-state">idle</span>
-      </div>
-      <p id="live-search" class="live-search hidden"></p>
-      <div id="live-feed" class="live-feed"></div>
-      <div id="live-retrieved" class="live-retrieved hidden">
-        <h3>⭐ Used as evidence</h3>
-        <ul id="live-hits"></ul>
-      </div>
-    </section>
-
-    <section id="result" class="card hidden">
-      <div class="result-head">
-        <h2 id="result-title">Answer</h2>
-        <button id="listen" type="button" class="small-btn hidden">🔊 Listen</button>
-      </div>
-      <p id="note" class="note hidden"></p>
-      <div id="answer" class="answer"></div>
-      <h3 id="sources-heading">Sources</h3>
-      <ol id="sources" class="sources"></ol>
-      <details id="steps-box">
-        <summary>What the agent did</summary>
-        <ul id="steps"></ul>
-      </details>
-    </section>
-
-    <section id="ideas-panel" class="card">
-      <h2 class="panel-title">💡 Ideas for today</h2>
-      <ul id="ideas-list" class="ideas-list"></ul>
-    </section>
-
-    <section id="tasks-panel" class="card">
-      <h2 class="panel-title">⏰ Scheduled tasks</h2>
-      <ul id="tasks-list" class="history-list"></ul>
-      <div class="row">
-        <input id="task-instruction" type="text"
-          placeholder="Instruction… e.g. Check trains to Madurai and note the options">
-        <input id="task-when" type="text"
-          placeholder="When… e.g. tomorrow 11:00 am">
-        <button id="task-add" type="button">Schedule</button>
-      </div>
-      <p id="task-msg" class="muted">Tasks run automatically while the app runs on your own
-        computer (<code>python run_tasks.py</code>). On this hosted page they are stored and
-        can be run on demand with ▶. A scheduled task can never pay or send real messages.</p>
-    </section>
-
-    <section id="mood-panel" class="card">
-      <h2 class="panel-title">💛 Mood — friend mode</h2>
-      <p class="muted">How are you feeling? Pick one and I'll find songs, shows and movies to match.</p>
-      <div class="row" id="mood-buttons">
-        <button type="button" class="small-btn mood-btn" data-mood="sad">😔 Sad</button>
-        <button type="button" class="small-btn mood-btn" data-mood="stressed">😮‍💨 Stressed</button>
-        <button type="button" class="small-btn mood-btn" data-mood="lonely">🌙 Lonely</button>
-        <button type="button" class="small-btn mood-btn" data-mood="happy">😄 Happy</button>
-        <button type="button" class="small-btn mood-btn" data-mood="romantic">❤️ Romantic</button>
-        <button type="button" class="small-btn mood-btn" data-mood="energetic">⚡ Energetic</button>
-        <button type="button" class="small-btn mood-btn" data-mood="bored">🥱 Bored</button>
-        <button type="button" class="small-btn mood-btn" data-mood="relaxed">😌 Relaxed</button>
-      </div>
-      <div id="mood-results"></div>
-    </section>
-
-    <section id="memory-panel" class="card">
-      <h2 class="panel-title">🧠 Memory</h2>
-      <ul id="memory-list" class="memory-list"></ul>
-      <div class="row">
-        <input id="memory-input" type="text"
-          placeholder="Add a fact or preference… e.g. city: Chennai">
-        <select id="memory-kind">
-          <option value="fact">fact</option>
-          <option value="preference">preference</option>
-          <option value="instruction">instruction (always followed)</option>
-        </select>
-        <button id="memory-add" type="button">Remember</button>
-      </div>
-      <p id="memory-msg" class="muted"></p>
-    </section>
-
-    <section id="skills-panel" class="card">
-      <h2 class="panel-title">🧩 Skills</h2>
-      <ul id="skills-list" class="skills-list"></ul>
-      <p class="muted">In Agent mode, try: <em>“Use the interview-prep skill for Databricks questions.”</em></p>
-      <details class="create-skill">
-        <summary>➕ Create a skill</summary>
-        <input id="skill-name" type="text" placeholder="skill-name (lowercase slug, e.g. cover-letter)">
-        <input id="skill-desc" type="text" placeholder="One-line description">
-        <textarea id="skill-instructions" rows="4"
-          placeholder="Instructions the agent should follow when this skill is active…"></textarea>
-        <button id="skill-create" type="button">Save skill</button>
-        <p id="skill-msg" class="muted"></p>
-      </details>
-    </section>
-
-    <details id="history-panel" class="card">
-      <summary>🕘 History</summary>
-      <ul id="history-list" class="history-list"></ul>
-    </details>
-
-    <details id="activity-panel" class="card">
-      <summary>📜 Activity</summary>
-      <ul id="activity-list" class="history-list"></ul>
-    </details>
-
-    <details id="runs-panel" class="card">
-      <summary>🧭 Runs — traces &amp; resume</summary>
-      <p class="muted">Every agent run is recorded with a step-by-step trace
-        (tool, timing, policy blocks). Runs that hit the step limit can be
-        resumed — the follow-up run continues from the stored context.</p>
-      <ul id="runs-list" class="history-list"></ul>
-      <div id="run-trace"></div>
-      <p id="runs-msg" class="muted"></p>
-    </details>
-
-    <footer>
-      <p>Free tiers (Groq / HuggingFace). Muse-inspired features: memory, goals, artifacts, tool loop.
-        Not a full Meta Muse clone — no cloud VM, payments, or OAuth mail.</p>
-    </footer>
-  </main>
   <script src="{{ url_for('static', filename='app.js') }}"></script>
 </body>
 </html>

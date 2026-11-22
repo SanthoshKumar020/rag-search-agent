@@ -60,6 +60,9 @@ TOOL_TIERS: dict[str, str] = {
     "cancel_task": "write",
     "save_artifact": "write",
     "use_skill": "write",
+    # v5: writes only a *proposal* — a human accepts it before it
+    # becomes a real skill, so it stays a write-tier store change.
+    "propose_skill": "write",
     # delegation runs the same loop under the caller's ceiling
     "delegate": "write",
     # act (drives a real browser outside the app)

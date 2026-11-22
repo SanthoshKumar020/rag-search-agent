@@ -15,6 +15,14 @@ see ~/workspace/research_notes/hermes-agent-harness-20261122):
   - cross-session log + `search_sessions` tool (sessions.py)
   - standing instructions in memory, always injected (memory.py)
 
+v5 (Hermes learning loop + gateway approvals, made human-gated):
+  - interactive approvals: act-tier tools in interactive runs pause
+    for a human Approve/Deny when the caller supplies an `approve`
+    callback (web broker in approvals.py, y/n prompt in the CLI)
+  - skill proposals: the `propose_skill` tool + a post-run
+    distillation pass write *proposals* (proposals.py) that a human
+    accepts before they become real skills — never auto-applied
+
 This is intentionally simpler than Meta Muse / Hermes: local JSON
 storage, free-tier LLMs, no cloud VM, no payment APIs, no OAuth.
 """
@@ -23,6 +31,7 @@ from __future__ import annotations
 import json
 import re
 import time
+import uuid
 from typing import Any, Callable, Optional
 
 import artifacts
@@ -32,6 +41,7 @@ import goals
 import media
 import memory
 import policy
+import proposals
 import reminders
 import runs
 import sessions
@@ -59,6 +69,8 @@ Rules:
 - Delegation: for a self-contained sub-piece of a big task (e.g. researching one sub-topic), you may call delegate with that subtask; a sub-agent runs it and returns its result. Do not delegate the whole task.
 - Past work: use search_sessions to check what you did in earlier runs before repeating research.
 - Scheduling: when the user asks for something at a FUTURE time ("tomorrow 11:00 am book/check X", "in 2 hours remind me via a task"), call create_task with the instruction and the time in the user's own words (e.g. "tomorrow 11:00 am"). Then finish by confirming the stored time (IST). A scheduled task runs later through this same loop with these same safety rules — it still cannot pay or send real messages.
+- Approvals: tools that drive a real browser (browse) may ask the user to approve the step first. If an observation says the user DENIED a tool, do not retry it — adapt the plan (research-only tools) or explain and finish.
+- Skill proposals: if you work out a reusable procedure the user will likely repeat (a checklist, a research routine, a drafting pattern), call propose_skill with a slug name, a one-line description, and the step-by-step instructions. A proposal changes nothing until the user accepts it in the UI — mention it briefly in your finish answer when you make one.
 - Friend mode: when the user expresses a feeling or mood ("I feel sad", "I'm stressed", "feeling lonely"), FIRST respond like a warm friend — acknowledge the feeling briefly and kindly in the finish answer — and use suggest_media to offer songs/shows/movies that fit the mood. Never sound clinical or robotic with feelings.
 
 User memory:
@@ -99,6 +111,7 @@ Reply with ONLY a single JSON object, no markdown fences, in one of these forms:
 {{"tool": "delegate", "task": "..."}}
 {{"tool": "list_skills"}}
 {{"tool": "use_skill", "name": "interview-prep"}}
+{{"tool": "propose_skill", "name": "train-check", "description": "When to use it, one line", "instructions": "Step-by-step procedure..."}}
 {{"tool": "finish", "answer": "..."}}
 """
 
@@ -186,6 +199,12 @@ TOOL_SCHEMAS: list[dict[str, Any]] = [
     _schema("list_skills", "List installed skills.", {}),
     _schema("use_skill", "Activate a skill's instructions for this run.",
             {"name": _STR}, ["name"]),
+    _schema("propose_skill",
+            "Propose a reusable skill distilled from this run. Stored "
+            "as a pending proposal — a human accepts it before it "
+            "becomes a real skill.",
+            {"name": _STR, "description": _STR, "instructions": _STR},
+            ["name", "instructions"]),
     _schema("finish", "End the run with the final answer.",
             {"answer": _STR}, ["answer"]),
 ]
@@ -441,6 +460,8 @@ def _run_tool(action: dict[str, Any], on_event: EventCallback,
             source="delegate",
             ceiling=ctx.get("ceiling"),
             _depth=int(ctx.get("depth") or 0) + 1,
+            approve=ctx.get("approve"),
+            propose_skills=False,  # the parent run owns distillation
         )
         return f"Sub-agent result:\n{sub.get('answer') or '(no answer)'}"
 
@@ -467,6 +488,23 @@ def _run_tool(action: dict[str, Any], on_event: EventCallback,
                 "have been added to your context for the rest of this run. "
                 "Follow them from the next step.")
 
+    if tool == "propose_skill":
+        name = (action.get("name") or "").strip()
+        description = (action.get("description") or "").strip()
+        instructions = (action.get("instructions") or "").strip()
+        on_event({"type": "tool", "tool": "propose_skill", "fact": name})
+        try:
+            p = proposals.create(
+                name, description, instructions,
+                source_run_id=ctx.get("run_id"),
+                source_task=ctx.get("task") or "")
+            return (f"Skill proposal [{p['id']}] '{p['name']}' saved as "
+                    "PENDING. It becomes a real skill only if the user "
+                    "accepts it in the Skills panel — mention it in "
+                    "your finish answer.")
+        except ValueError as exc:
+            return f"Could not store the skill proposal: {exc}"
+
     if tool == "save_artifact":
         title = (action.get("title") or "Untitled").strip()
         content = action.get("content") or ""
@@ -481,6 +519,60 @@ def _run_tool(action: dict[str, Any], on_event: EventCallback,
     return f"Unknown tool: {tool}. Use one of the listed tools."
 
 
+# ----------------------------------------------------------------------
+# Skill distillation (v5) — the propose half of the learning loop
+# ----------------------------------------------------------------------
+_DISTILL_SYSTEM = (
+    "You review a finished agent run's step trace and decide whether "
+    "it demonstrates a REUSABLE procedure the user will likely repeat "
+    "(a checklist, a research routine, a drafting pattern). If yes, "
+    "reply with ONLY a JSON object: {\"name\": \"slug-name\", "
+    "\"description\": \"one line: when to use it\", \"instructions\": "
+    "\"the step-by-step procedure, generalised — no one-off facts, "
+    "names, dates or results from this run\"}. If the run was a "
+    "one-off question or trivial, reply with ONLY: null"
+)
+
+
+def _maybe_distill_skill(task: str, trace: list[dict[str, Any]],
+                         run_id: str | None,
+                         emit: EventCallback) -> None:
+    """Best-effort: after a successful multi-step run, distill its
+    trace into a PENDING skill proposal. Never raises, never applies
+    anything — a human accepts proposals in the UI."""
+    real_steps = [t for t in trace
+                  if t.get("tool") not in ("finish", "retry", None)
+                  and not t.get("blocked")]
+    if len(real_steps) < 3:
+        return
+    try:
+        trace_text = "\n".join(
+            f"step {t.get('step')}: {t.get('tool')} "
+            f"args={t.get('args') or ''} -> "
+            f"{(t.get('observation') or '')[:160]}"
+            for t in trace)
+        raw = generate(_DISTILL_SYSTEM,
+                       f"Task: {task}\n\nTrace:\n{trace_text}",
+                       model=config.AGENT_MODEL)
+        if not raw:
+            return
+        start, end = raw.find("{"), raw.rfind("}")
+        if start < 0 or end <= start:
+            return
+        data = json.loads(raw[start:end + 1])
+        if not isinstance(data, dict) or not data.get("name"):
+            return
+        p = proposals.create(
+            str(data.get("name") or ""),
+            str(data.get("description") or ""),
+            str(data.get("instructions") or ""),
+            source_run_id=run_id, source_task=task)
+        emit({"type": "skill_proposed", "name": p["name"],
+              "proposal_id": p["id"], "auto": True})
+    except Exception:
+        pass  # distillation is a bonus; never break a finished run
+
+
 def run_agent(
     task: str,
     *,
@@ -490,6 +582,8 @@ def run_agent(
     ceiling: str | None = None,
     _depth: int = 0,
     resume_digest: str = "",
+    approve: Optional[Callable[[dict[str, Any]], bool]] = None,
+    propose_skills: bool = True,
 ) -> dict[str, Any]:
     """Run the multi-step agent.
 
@@ -500,6 +594,15 @@ def run_agent(
     `resume_digest` seeds the run with a previous run's compressed
     transcript so an interrupted run can continue. Every run is
     recorded in runs.py (trace) and sessions.py (searchable log).
+
+    v5: `approve` is an optional human-in-the-loop callback. When a
+    run whose policy ceiling allows an `act`-tier tool wants one, the
+    callback receives {id, run_id, tool, tier, args} and returns
+    True/False; a denial becomes the tool's observation so the model
+    adapts. Callers that pass no callback keep v4 behaviour (the web
+    UI passes the approvals.py broker, the CLI a y/n prompt).
+    `propose_skills=False` disables the post-run skill distillation
+    (delegate children — the parent run owns it).
     """
     emit = on_event or (lambda e: None)
     task = (task or "").strip()
@@ -530,6 +633,8 @@ def run_agent(
             sessions.log(source, task, answer, tools_used)
         except Exception:
             pass
+        if status == "done" and propose_skills:
+            _maybe_distill_skill(task, trace, run_id, emit)
         return {"answer": answer, "steps": steps,
                 "tools_used": tools_used, "run_id": run_id,
                 "trace": trace}
@@ -546,7 +651,8 @@ def run_agent(
             "(continue from it, do not repeat finished steps):\n"
             + resume_digest)
     skill_context: list[str] = []  # instructions from use_skill, kept all run
-    ctx = {"source": source, "ceiling": cap, "depth": _depth}
+    ctx = {"source": source, "ceiling": cap, "depth": _depth,
+           "run_id": run_id, "task": task, "approve": approve}
 
     for i in range(1, max_steps + 1):
         view = context_mod.maybe_compress(transcript)
@@ -614,13 +720,51 @@ def run_agent(
         # Policy gate (v4): fail closed on tools above this run's tier
         # ceiling — e.g. unattended runs may not drive the browser.
         allowed, reason = policy.check(tool, source, ceiling=cap)
+        tier = policy.tier_of(tool)
         started = time.monotonic()
+        approval_state: str | None = None
         if not allowed:
             observation = reason
-            emit({"type": "policy_block", "tool": tool, "reason": reason})
+            emit({"type": "policy_block", "tool": tool, "tier": tier,
+                  "reason": reason})
             _record({"step": i, "tool": tool, "args": args_preview,
                      "observation": observation[:300], "ms": 0,
                      "blocked": True})
+        elif tier == "act" and approve is not None:
+            # Approval gate (v5): policy allows this tier for the run,
+            # but a human must confirm act-tier tools in interactive
+            # runs. A denial (or approver error) fails closed and
+            # becomes the observation, so the model adapts its plan.
+            request_info = {"id": str(uuid.uuid4())[:8],
+                            "run_id": run_id, "tool": tool,
+                            "tier": tier, "args": args_preview,
+                            "step": i}
+            emit({"type": "approval_request", **request_info})
+            try:
+                granted = bool(approve(request_info))
+            except Exception:
+                granted = False
+            approval_state = "approved" if granted else "denied"
+            emit({"type": "approval_decided", "tool": tool,
+                  "tier": tier, "approved": granted})
+            if not granted:
+                observation = (
+                    f"The user DENIED approval for the '{tool}' tool. "
+                    "Do not retry it. Continue with research-only "
+                    "tools (web_search / fetch_page) or explain what "
+                    "you cannot do without it and finish.")
+                _record({"step": i, "tool": tool, "args": args_preview,
+                         "observation": observation[:300], "ms": 0,
+                         "blocked": True, "approval": "denied"})
+            else:
+                try:
+                    observation = _run_tool(action, emit, ctx)
+                except Exception as exc:
+                    observation = f"Tool {tool} failed: {exc}"
+                _record({"step": i, "tool": tool, "args": args_preview,
+                         "observation": observation[:300],
+                         "ms": int((time.monotonic() - started) * 1000),
+                         "approval": "approved"})
         else:
             try:
                 observation = _run_tool(action, emit, ctx)
@@ -640,7 +784,9 @@ def run_agent(
                 emit({"type": "skill_active", "name": rec["name"]})
         transcript.append(f"Assistant tool call: {json.dumps(action, ensure_ascii=False)}")
         transcript.append(f"Observation: {observation[:3000]}")
-        emit({"type": "tool_result", "tool": tool, "preview": observation[:400]})
+        emit({"type": "tool_result", "tool": tool, "tier": tier,
+              "blocked": approval_state == "denied",
+              "preview": observation[:400]})
 
     # max steps reached — checkpoint a digest so the run can resume
     answer = (
@@ -654,7 +800,9 @@ def run_agent(
 
 def resume_run(run_id: str, follow_up: str = "",
                max_steps: int = MAX_STEPS_DEFAULT,
-               on_event: Optional[EventCallback] = None) -> dict[str, Any]:
+               on_event: Optional[EventCallback] = None,
+               approve: Optional[Callable[[dict[str, Any]], bool]] = None
+               ) -> dict[str, Any]:
     """Continue an unfinished run (step_limit / error) with its stored
     context digest. Returns the new run's result, with resumed_from
     set on the new run record."""
@@ -666,7 +814,7 @@ def resume_run(run_id: str, follow_up: str = "",
     if extra:
         task = f"{task}\n\nFollow-up instruction: {extra}"
     result = run_agent(task, max_steps=max_steps, on_event=on_event,
-                       source="interactive",
+                       source="interactive", approve=approve,
                        resume_digest=run.get("digest") or "")
     if result.get("run_id"):
         try:

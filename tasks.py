@@ -236,6 +236,31 @@ def due_tasks(now: datetime | None = None) -> list[dict[str, Any]]:
     return out
 
 
+def completed_since(iso_ts: str) -> list[dict[str, Any]]:
+    """Finished tasks (done/failed) executed after `iso_ts`, newest
+    first — the briefing's "overnight results" feed (v5)."""
+    try:
+        since = datetime.fromisoformat(iso_ts)
+    except (TypeError, ValueError):
+        return []
+    if since.tzinfo is None:
+        since = since.replace(tzinfo=IST)
+    out = []
+    for t in _load():
+        if t.get("status") not in ("done", "failed"):
+            continue
+        try:
+            executed = datetime.fromisoformat(t.get("executed_at") or "")
+        except ValueError:
+            continue
+        if executed.tzinfo is None:
+            executed = executed.replace(tzinfo=IST)
+        if executed > since:
+            out.append(t)
+    return sorted(out, key=lambda t: t.get("executed_at") or "",
+                  reverse=True)
+
+
 def format_task(task: dict[str, Any]) -> str:
     return (f"[{task['id']}] {task['instruction']} — "
             f"runs {task['run_at']} ({task['status']})")

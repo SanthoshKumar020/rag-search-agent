@@ -165,7 +165,8 @@ finally:
 import agent_core
 
 schemas = {s["name"]: s for s in agent_core.tool_schemas()}
-check("schemas: 29 tools", len(schemas) == 29, f"got {len(schemas)}")
+# v5 added the propose_skill tool -> 30 (was 29 in v4)
+check("schemas: 30 tools", len(schemas) == 30, f"got {len(schemas)}")
 check("schemas: delegate + search_sessions present",
       "delegate" in schemas and "search_sessions" in schemas)
 check("schemas: tiers annotated",
@@ -232,7 +233,7 @@ check("web: /api/health ok", r.status_code == 200 and r.get_json()["ok"])
 r = client.get("/api/tools")
 body = r.get_json()
 check("web: /api/tools has tiers",
-      body["count"] == 29
+      body["count"] == 30
       and any(t["name"] == "browse" and t["tier"] == "act"
               for t in body["tools"]))
 r = client.get("/api/runs")
@@ -253,7 +254,7 @@ r = client.post("/api/runs/resume", json={"id": "doesnotexist"})
 check("web: resume unknown id 404", r.status_code == 404)
 r = client.get("/")
 check("web: home page has Runs panel",
-      r.status_code == 200 and b"runs-panel" in r.data)
+      r.status_code == 200 and b'data-panel-body="runs"' in r.data)
 r = client.post("/api/memory", json={"fact": "Prefer short answers",
                                      "kind": "instruction"})
 check("web: memory accepts instruction kind",
