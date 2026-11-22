@@ -452,6 +452,55 @@ def cmd_remind(args) -> int:
     return 1
 
 
+def cmd_tasks(args) -> int:
+    import tasks as tasks_mod
+
+    if args.tasks_cmd == "add":
+        try:
+            t = tasks_mod.create(args.instruction, args.at)
+        except ValueError as exc:
+            print(f"Could not schedule task: {exc}", file=sys.stderr)
+            return 1
+        print(f"Scheduled [{t['id']}]: {t['instruction']}")
+        print(f"  runs at {t['run_at']} (Asia/Kolkata)")
+        print("  It executes while `python run_tasks.py` is running "
+              "locally, or on demand from the web UI.")
+        return 0
+    if args.tasks_cmd == "list":
+        items = tasks_mod.list_tasks()
+        if not items:
+            print("(no scheduled tasks)")
+            return 0
+        for t in items:
+            print(f"  {tasks_mod.format_task(t)}")
+        return 0
+    if args.tasks_cmd == "cancel":
+        try:
+            t = tasks_mod.cancel(args.id)
+        except (KeyError, ValueError) as exc:
+            print(str(exc), file=sys.stderr)
+            return 1
+        print(f"Cancelled [{t['id']}]: {t['instruction']}")
+        return 0
+    if args.tasks_cmd == "run-due":
+        import run_tasks
+
+        outcomes = run_tasks.run_due_tasks()
+        print(f"Executed {len(outcomes)} due task(s).")
+        for o in outcomes:
+            print(f"  [{o['id']}] {o['status']}")
+        return 0
+    print("Unknown tasks command", file=sys.stderr)
+    return 1
+
+
+def cmd_mood(args) -> int:
+    import media
+
+    print(media.suggest_media(args.mood, args.language))
+    return 0
+
+
 def main() -> int:
     parser = argparse.ArgumentParser(
         prog="agent.py",
@@ -534,6 +583,29 @@ def main() -> int:
     r_done = r_sub.add_parser("done")
     r_done.add_argument("id")
     p_remind.set_defaults(func=cmd_remind)
+
+    p_tasks = sub.add_parser(
+        "tasks", help="schedule instructions to run later (IST)")
+    t_sub = p_tasks.add_subparsers(dest="tasks_cmd", required=True)
+    t_add = t_sub.add_parser("add")
+    t_add.add_argument("instruction")
+    t_add.add_argument("--at", required=True,
+                       help="e.g. 'tomorrow 11:00 am', 'in 2 hours', "
+                            "2026-11-23T11:00")
+    t_sub.add_parser("list")
+    t_cancel = t_sub.add_parser("cancel")
+    t_cancel.add_argument("id")
+    t_sub.add_parser("run-due")
+    p_tasks.set_defaults(func=cmd_tasks)
+
+    p_mood = sub.add_parser(
+        "mood", help="friend mode: songs/shows/movies for a mood")
+    p_mood.add_argument("mood",
+                        help="sad, happy, stressed, romantic, energetic, "
+                             "bored, lonely, relaxed")
+    p_mood.add_argument("--language", choices=("both", "ta", "en"),
+                        default="both")
+    p_mood.set_defaults(func=cmd_mood)
 
     args = parser.parse_args()
     log(f"embeddings: {config.embed_backend()} | llm: {config.llm_backend()}")

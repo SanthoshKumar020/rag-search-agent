@@ -9,13 +9,17 @@ import threading
 from flask import (Flask, Response, jsonify, render_template, request,
                    stream_with_context)
 
+import os
+
 import activity
 import agent as pipeline
 import briefing
 import config
 import history
+import media
 import memory
 import skills
+import tasks as tasks_mod
 import tools_extra
 from llm import generate
 
@@ -311,6 +315,118 @@ def api_cards():
 @app.get("/api/activity")
 def api_activity():
     return jsonify({"activity": activity.list_activity()})
+
+
+# ----------------------------------------------------------------------
+# v3: scheduled tasks, mood companion, tool schemas, webhook trigger
+# ----------------------------------------------------------------------
+@app.get("/api/tasks")
+def api_tasks_list():
+    return jsonify({"tasks": tasks_mod.list_tasks()})
+
+
+@app.post("/api/tasks")
+def api_tasks_create():
+    data = request.get_json(silent=True) or {}
+    try:
+        task = tasks_mod.create(data.get("instruction") or "",
+                                data.get("run_at") or "")
+    except ValueError as exc:
+        return jsonify({"error": str(exc)}), 400
+    return jsonify({"created": task, "tasks": tasks_mod.list_tasks()})
+
+
+@app.post("/api/tasks/cancel")
+def api_tasks_cancel():
+    data = request.get_json(silent=True) or {}
+    tid = (data.get("id") or "").strip()
+    if not tid:
+        return jsonify({"error": "Missing task id."}), 400
+    try:
+        task = tasks_mod.cancel(tid)
+    except KeyError as exc:
+        return jsonify({"error": str(exc)}), 404
+    except ValueError as exc:
+        return jsonify({"error": str(exc)}), 400
+    return jsonify({"cancelled": task, "tasks": tasks_mod.list_tasks()})
+
+
+@app.post("/api/tasks/run")
+def api_tasks_run():
+    """Execute one stored task right now (on-demand path for hosted
+    servers, which cannot wake themselves at the scheduled time)."""
+    data = request.get_json(silent=True) or {}
+    tid = (data.get("id") or "").strip()
+    task = tasks_mod.get(tid)
+    if task is None:
+        return jsonify({"error": f"Task not found: {tid}"}), 404
+    if task.get("status") in ("done", "cancelled"):
+        return jsonify({"error": f"Task already {task['status']}."}), 400
+    try:
+        import agent_core
+    except ImportError:
+        return jsonify({"error": "agent_core module not found."}), 501
+    tasks_mod.mark_running(tid)
+    try:
+        result = agent_core.run_agent(task["instruction"], max_steps=8)
+        answer = result.get("answer") or ""
+        updated = tasks_mod.mark_done(tid, answer)
+    except Exception as exc:
+        updated = tasks_mod.mark_failed(tid, str(exc))
+        return jsonify({"task": updated, "error": f"Task failed: {exc}"}), 502
+    _record_activity(f"[scheduled] {task['instruction']}", result)
+    return jsonify({"task": updated, "answer": answer,
+                    "tools_used": result.get("tools_used") or []})
+
+
+@app.get("/api/mood")
+def api_mood():
+    mood = (request.args.get("mood") or "").strip()
+    language = (request.args.get("language") or "both").strip()
+    if not mood:
+        return jsonify({"error": "Pass ?mood=sad (or happy, stressed, "
+                                 "romantic, energetic, bored, lonely)."}), 400
+    try:
+        return jsonify(media.suggest_media_data(mood, language))
+    except Exception as exc:
+        return jsonify({"error": f"Mood suggestions failed: {exc}"}), 502
+
+
+@app.get("/api/tools")
+def api_tools():
+    try:
+        import agent_core
+        schemas = agent_core.tool_schemas()
+    except Exception:
+        schemas = []
+    return jsonify({"tools": schemas, "count": len(schemas)})
+
+
+@app.post("/api/webhook/run")
+def api_webhook_run():
+    """Trigger endpoint (n8n-style): POST {"task": "..."} runs the
+    agent once and returns its answer. If the AGENT_WEBHOOK_TOKEN env
+    var is set, the request must send it as the X-Agent-Token header.
+    The agent's safety rules apply — a webhook can never make it pay
+    or send real messages."""
+    token = os.environ.get("AGENT_WEBHOOK_TOKEN", "").strip()
+    if token and request.headers.get("X-Agent-Token", "") != token:
+        return jsonify({"error": "Invalid or missing X-Agent-Token."}), 401
+    data = request.get_json(silent=True) or {}
+    task = (data.get("task") or "").strip()
+    if not task:
+        return jsonify({"error": "JSON body needs a 'task' string."}), 400
+    try:
+        import agent_core
+        result = agent_core.run_agent(task, max_steps=8)
+    except Exception as exc:
+        return jsonify({"error": f"Agent failed: {exc}"}), 502
+    _record_activity(f"[webhook] {task}", result)
+    return jsonify({
+        "answer": result.get("answer") or "",
+        "steps": result.get("steps") or [],
+        "tools_used": result.get("tools_used") or [],
+    })
 
 
 @app.post("/api/query")

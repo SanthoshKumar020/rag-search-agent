@@ -16,9 +16,11 @@ from typing import Any, Callable, Optional
 import artifacts
 import config
 import goals
+import media
 import memory
 import reminders
 import skills
+import tasks as tasks_mod
 import tools_extra
 from fetch import MIN_TEXT, fetch_text
 from llm import generate
@@ -37,6 +39,8 @@ Rules:
 - For purchases or sending real emails: STOP and explain what the human must do — you cannot complete payments or send mail yourself.
 - When the task is done, call the finish tool with a clear summary.
 - Keep tool arguments short and concrete.
+- Scheduling: when the user asks for something at a FUTURE time ("tomorrow 11:00 am book/check X", "in 2 hours remind me via a task"), call create_task with the instruction and the time in the user's own words (e.g. "tomorrow 11:00 am"). Then finish by confirming the stored time (IST). A scheduled task runs later through this same loop with these same safety rules — it still cannot pay or send real messages.
+- Friend mode: when the user expresses a feeling or mood ("I feel sad", "I'm stressed", "feeling lonely"), FIRST respond like a warm friend — acknowledge the feeling briefly and kindly in the finish answer — and use suggest_media to offer songs/shows/movies that fit the mood. Never sound clinical or robotic with feelings.
 
 User memory:
 {memory}
@@ -63,12 +67,98 @@ Reply with ONLY a single JSON object, no markdown fences, in one of these forms:
 {{"tool": "list_goals"}}
 {{"tool": "create_reminder", "text": "...", "due": "2026-11-25"}}
 {{"tool": "list_reminders"}}
+{{"tool": "create_task", "instruction": "...", "run_at": "tomorrow 11:00 am"}}  (run_at: user's words, ISO, or "in 2 hours"; IST)
+{{"tool": "list_tasks"}}
+{{"tool": "cancel_task", "id": "..."}}
+{{"tool": "suggest_media", "mood": "sad", "language": "both"}}  (language: both|ta|en — default both)
 {{"tool": "save_artifact", "title": "...", "content": "...", "kind": "markdown|text|code"}}
 {{"tool": "recall_memory", "query": "..."}}
 {{"tool": "list_skills"}}
 {{"tool": "use_skill", "name": "interview-prep"}}
 {{"tool": "finish", "answer": "..."}}
 """
+
+
+# ----------------------------------------------------------------------
+# Structured tool schemas (v3)
+#
+# A machine-readable registry of every tool — name, description, and
+# JSON-Schema-style parameters — so other programs (and GET /api/tools)
+# can discover what the agent can do, the same idea as MCP tool
+# definitions. The loop itself still uses the JSON protocol in SYSTEM;
+# this registry is the contract/documentation layer and must be kept
+# in sync with _run_tool.
+# ----------------------------------------------------------------------
+def _schema(name: str, description: str,
+            properties: dict[str, Any],
+            required: list[str] | None = None) -> dict[str, Any]:
+    return {
+        "name": name,
+        "description": description,
+        "parameters": {
+            "type": "object",
+            "properties": properties,
+            "required": required or [],
+        },
+    }
+
+
+_STR = {"type": "string"}
+TOOL_SCHEMAS: list[dict[str, Any]] = [
+    _schema("web_search", "Search the live web.", {"query": _STR}, ["query"]),
+    _schema("fetch_page", "Fetch and read a web page.", {"url": _STR}, ["url"]),
+    _schema("browse", "Drive a real browser (local only).",
+            {"task": _STR}, ["task"]),
+    _schema("get_datetime", "Current date/time (UTC + IST).", {}),
+    _schema("weather", "Today's weather for a city.", {"city": _STR}, ["city"]),
+    _schema("news", "Top headlines, optionally by topic.", {"topic": _STR}),
+    _schema("wikipedia", "Wikipedia summary for a topic.",
+            {"query": _STR}, ["query"]),
+    _schema("calculate", "Safe arithmetic evaluation.",
+            {"expression": _STR}, ["expression"]),
+    _schema("currency", "Currency conversion (keyless rates).",
+            {"amount": {"type": "number"}, "from": _STR, "to": _STR},
+            ["amount", "from", "to"]),
+    _schema("translate", "Translate English text to a language code.",
+            {"text": _STR, "to": _STR}, ["text", "to"]),
+    _schema("holidays", "Upcoming public holidays (Nager.Date; no India).",
+            {"country": _STR, "year": {"type": "integer"}}),
+    _schema("define", "Dictionary definition of a word.",
+            {"word": _STR}, ["word"]),
+    _schema("remember", "Store a fact or preference in memory.",
+            {"fact": _STR, "kind": _STR}, ["fact"]),
+    _schema("recall_memory", "Search memory.", {"query": _STR}),
+    _schema("create_goal", "Create a long-running goal.",
+            {"title": _STR, "plan": _STR}, ["title"]),
+    _schema("update_goal", "Update a goal's status/note.",
+            {"id": _STR, "status": _STR, "note": _STR}, ["id"]),
+    _schema("list_goals", "List active goals.", {}),
+    _schema("create_reminder", "Create a reminder with an ISO due date.",
+            {"text": _STR, "due": _STR}, ["text", "due"]),
+    _schema("list_reminders", "List open reminders.", {}),
+    _schema("create_task",
+            "Schedule an instruction to run at a future time (IST).",
+            {"instruction": _STR, "run_at": _STR},
+            ["instruction", "run_at"]),
+    _schema("list_tasks", "List scheduled tasks.", {}),
+    _schema("cancel_task", "Cancel a pending scheduled task.",
+            {"id": _STR}, ["id"]),
+    _schema("suggest_media",
+            "Songs/shows/movies for a mood (friend mode).",
+            {"mood": _STR, "language": _STR}, ["mood"]),
+    _schema("save_artifact", "Save a document/code artifact.",
+            {"title": _STR, "content": _STR, "kind": _STR},
+            ["title", "content"]),
+    _schema("list_skills", "List installed skills.", {}),
+    _schema("use_skill", "Activate a skill's instructions for this run.",
+            {"name": _STR}, ["name"]),
+    _schema("finish", "End the run with the final answer.",
+            {"answer": _STR}, ["answer"]),
+]
+
+
+def tool_schemas() -> list[dict[str, Any]]:
+    return TOOL_SCHEMAS
 
 
 def _parse_action(text: str) -> dict[str, Any] | None:
@@ -253,6 +343,44 @@ def _run_tool(action: dict[str, Any], on_event: EventCallback) -> str:
         return "Open reminders:\n" + "\n".join(
             f"- [{r['id']}] {r['text']} (due {r['due']})" for r in items
         )
+
+    if tool == "create_task":
+        instruction = (action.get("instruction") or "").strip()
+        run_at = (action.get("run_at") or "").strip()
+        on_event({"type": "tool", "tool": "create_task", "fact": instruction})
+        try:
+            t = tasks_mod.create(instruction, run_at)
+            return (f"Scheduled task [{t['id']}]: '{t['instruction']}' "
+                    f"runs at {t['run_at']} (Asia/Kolkata).")
+        except ValueError as exc:
+            return f"Could not schedule task: {exc}"
+
+    if tool == "list_tasks":
+        on_event({"type": "tool", "tool": "list_tasks"})
+        items = tasks_mod.list_tasks()
+        if not items:
+            return "No scheduled tasks."
+        return "Scheduled tasks:\n" + "\n".join(
+            tasks_mod.format_task(t) for t in items
+        )
+
+    if tool == "cancel_task":
+        tid = (action.get("id") or "").strip()
+        on_event({"type": "tool", "tool": "cancel_task", "id": tid})
+        try:
+            t = tasks_mod.cancel(tid)
+            return f"Cancelled task [{t['id']}]: {t['instruction']}"
+        except (KeyError, ValueError) as exc:
+            return str(exc)
+
+    if tool == "suggest_media":
+        mood = (action.get("mood") or "").strip()
+        language = (action.get("language") or "both").strip()
+        on_event({"type": "tool", "tool": "suggest_media", "query": mood})
+        try:
+            return media.suggest_media(mood, language)
+        except Exception as exc:
+            return f"Media suggestions failed: {exc}"
 
     if tool == "list_skills":
         on_event({"type": "tool", "tool": "list_skills"})

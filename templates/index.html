@@ -85,8 +85,10 @@
       </div>
       <p id="agent-hint" class="browse-hint hidden">
         Agent mode uses tools: web search, fetch, weather, news, Wikipedia, calculator,
-        currency, reminders, skills, memory, goals, artifacts, optional browse.
-        Example: <em>Use the daily-briefing skill and brief me.</em>
+        currency, reminders, scheduled tasks, mood suggestions, skills, memory, goals,
+        artifacts, optional browse.
+        Examples: <em>Use the daily-briefing skill and brief me.</em> ·
+        <em>Tomorrow 11:00 am, check trains to Madurai.</em> · <em>I feel sad.</em>
       </p>
 
       <div id="status" class="status hidden">
@@ -127,6 +129,37 @@
     <section id="ideas-panel" class="card">
       <h2 class="panel-title">💡 Ideas for today</h2>
       <ul id="ideas-list" class="ideas-list"></ul>
+    </section>
+
+    <section id="tasks-panel" class="card">
+      <h2 class="panel-title">⏰ Scheduled tasks</h2>
+      <ul id="tasks-list" class="history-list"></ul>
+      <div class="row">
+        <input id="task-instruction" type="text"
+          placeholder="Instruction… e.g. Check trains to Madurai and note the options">
+        <input id="task-when" type="text"
+          placeholder="When… e.g. tomorrow 11:00 am">
+        <button id="task-add" type="button">Schedule</button>
+      </div>
+      <p id="task-msg" class="muted">Tasks run automatically while the app runs on your own
+        computer (<code>python run_tasks.py</code>). On this hosted page they are stored and
+        can be run on demand with ▶. A scheduled task can never pay or send real messages.</p>
+    </section>
+
+    <section id="mood-panel" class="card">
+      <h2 class="panel-title">💛 Mood — friend mode</h2>
+      <p class="muted">How are you feeling? Pick one and I'll find songs, shows and movies to match.</p>
+      <div class="row" id="mood-buttons">
+        <button type="button" class="small-btn mood-btn" data-mood="sad">😔 Sad</button>
+        <button type="button" class="small-btn mood-btn" data-mood="stressed">😮‍💨 Stressed</button>
+        <button type="button" class="small-btn mood-btn" data-mood="lonely">🌙 Lonely</button>
+        <button type="button" class="small-btn mood-btn" data-mood="happy">😄 Happy</button>
+        <button type="button" class="small-btn mood-btn" data-mood="romantic">❤️ Romantic</button>
+        <button type="button" class="small-btn mood-btn" data-mood="energetic">⚡ Energetic</button>
+        <button type="button" class="small-btn mood-btn" data-mood="bored">🥱 Bored</button>
+        <button type="button" class="small-btn mood-btn" data-mood="relaxed">😌 Relaxed</button>
+      </div>
+      <div id="mood-results"></div>
     </section>
 
     <section id="memory-panel" class="card">

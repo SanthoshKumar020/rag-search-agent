@@ -758,6 +758,179 @@
     } catch (e) { /* panel stays empty */ }
   }
 
+  // ---- Scheduled tasks panel (v3) ---------------------------------------
+
+  const tasksListEl = document.getElementById("tasks-list");
+  const taskMsg = document.getElementById("task-msg");
+
+  function renderTasks(tasks) {
+    tasksListEl.innerHTML = "";
+    (tasks || []).forEach(function (t) {
+      const li = el("li", "history-item");
+      const when = t.run_at ? new Date(t.run_at).toLocaleString("en-IN") : "";
+      li.appendChild(el("span", "history-meta",
+        when + " · " + (t.status || "") + " — "));
+      li.appendChild(el("span", null, t.instruction || ""));
+      if (t.status === "pending") {
+        const runBtn = el("button", "del-btn", "▶");
+        runBtn.type = "button";
+        runBtn.title = "Run now";
+        runBtn.addEventListener("click", async function () {
+          taskMsg.textContent = "Running task…";
+          try {
+            const resp = await fetch("/api/tasks/run", {
+              method: "POST",
+              headers: { "Content-Type": "application/json" },
+              body: JSON.stringify({ id: t.id }),
+            });
+            const d = await resp.json();
+            taskMsg.textContent = d.error || ("Done: " + (d.answer || "").slice(0, 160));
+            loadTasks();
+            loadActivity();
+          } catch (e) { taskMsg.textContent = "Run failed."; }
+        });
+        li.appendChild(runBtn);
+        const cancelBtn = el("button", "del-btn", "✕");
+        cancelBtn.type = "button";
+        cancelBtn.title = "Cancel task";
+        cancelBtn.addEventListener("click", async function () {
+          try {
+            const resp = await fetch("/api/tasks/cancel", {
+              method: "POST",
+              headers: { "Content-Type": "application/json" },
+              body: JSON.stringify({ id: t.id }),
+            });
+            const d = await resp.json();
+            if (d.tasks) renderTasks(d.tasks);
+          } catch (e) { /* ignore */ }
+        });
+        li.appendChild(cancelBtn);
+      }
+      if (t.result) {
+        li.appendChild(el("div", "history-meta", "→ " + t.result.slice(0, 200)));
+      }
+      tasksListEl.appendChild(li);
+    });
+    if (!tasksListEl.children.length) {
+      tasksListEl.appendChild(el("li", "muted", "No scheduled tasks yet."));
+    }
+  }
+
+  async function loadTasks() {
+    try {
+      const resp = await fetch("/api/tasks");
+      const data = await resp.json();
+      renderTasks(data.tasks);
+    } catch (e) { /* panel stays empty */ }
+  }
+
+  document.getElementById("task-add").addEventListener("click", async function () {
+    const instruction = document.getElementById("task-instruction").value.trim();
+    const when = document.getElementById("task-when").value.trim();
+    if (!instruction || !when) {
+      taskMsg.textContent = "Type an instruction and a time (e.g. tomorrow 11:00 am).";
+      return;
+    }
+    try {
+      const resp = await fetch("/api/tasks", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ instruction: instruction, run_at: when }),
+      });
+      const d = await resp.json();
+      if (!resp.ok) { taskMsg.textContent = d.error || "Could not schedule."; return; }
+      taskMsg.textContent = "Scheduled for " +
+        new Date(d.created.run_at).toLocaleString("en-IN") + " IST.";
+      document.getElementById("task-instruction").value = "";
+      document.getElementById("task-when").value = "";
+      renderTasks(d.tasks);
+    } catch (e) { taskMsg.textContent = "Could not schedule."; }
+  });
+
+  // ---- Mood / friend mode (v3) -------------------------------------------
+
+  const moodResults = document.getElementById("mood-results");
+  const MOOD_LINES = {
+    sad: "Hey… it's okay to feel low sometimes. Here are some gentle picks for you 💛",
+    stressed: "Take a breath — you've got a lot on. Let these help you unwind 💛",
+    lonely: "You're not alone — I'm right here. Something warm for company 💛",
+    happy: "Love to see it! Let's keep the good mood rolling 🎉",
+    romantic: "Ooh, someone's in a love mood ❤️ These are for you:",
+    energetic: "Full power mode! ⚡ Here's your fuel:",
+    bored: "Boredom ends now — these will hook you:",
+    relaxed: "Stay in that calm zone 😌 — perfect picks to match:",
+  };
+
+  document.querySelectorAll(".mood-btn").forEach(function (b) {
+    b.addEventListener("click", async function () {
+      const mood = b.getAttribute("data-mood");
+      moodResults.innerHTML = "";
+      moodResults.appendChild(el("p", null, MOOD_LINES[mood] || "Here you go:"));
+      moodResults.appendChild(el("p", "muted", "Finding songs, shows and movies…"));
+      try {
+        const resp = await fetch("/api/mood?mood=" + encodeURIComponent(mood));
+        const d = await resp.json();
+        moodResults.innerHTML = "";
+        moodResults.appendChild(el("p", null, MOOD_LINES[mood] || "Here you go:"));
+        if (d.songs && d.songs.length) {
+          moodResults.appendChild(el("h3", null, "🎵 Songs"));
+          const ul = el("ul", "history-list");
+          d.songs.forEach(function (s) {
+            const li = el("li", "history-item");
+            const a = el("a", null, s.title + (s.artist ? " — " + s.artist : ""));
+            a.href = s.url || "#";
+            a.target = "_blank";
+            a.rel = "noopener";
+            li.appendChild(a);
+            if (s.preview) {
+              const p = el("a", "history-meta", "  ▶ preview");
+              p.href = s.preview;
+              p.target = "_blank";
+              p.rel = "noopener";
+              li.appendChild(p);
+            }
+            ul.appendChild(li);
+          });
+          moodResults.appendChild(ul);
+        }
+        if (d.shows && d.shows.length) {
+          moodResults.appendChild(el("h3", null, "📺 Shows"));
+          const ul2 = el("ul", "history-list");
+          d.shows.forEach(function (s) {
+            const li = el("li", "history-item");
+            const a = el("a", null, s.title);
+            a.href = s.url || "#";
+            a.target = "_blank";
+            a.rel = "noopener";
+            li.appendChild(a);
+            if (s.summary) {
+              li.appendChild(el("span", "history-meta", " — " + s.summary.slice(0, 140)));
+            }
+            ul2.appendChild(li);
+          });
+          moodResults.appendChild(ul2);
+        }
+        if (d.movies && d.movies.length) {
+          moodResults.appendChild(el("h3", null, "🎬 Movie lists"));
+          const ul3 = el("ul", "history-list");
+          d.movies.forEach(function (m) {
+            const li = el("li", "history-item");
+            const a = el("a", null, m.title);
+            a.href = m.url || "#";
+            a.target = "_blank";
+            a.rel = "noopener";
+            li.appendChild(a);
+            ul3.appendChild(li);
+          });
+          moodResults.appendChild(ul3);
+        }
+        if (d.note) moodResults.appendChild(el("p", "muted", d.note));
+      } catch (e) {
+        moodResults.appendChild(el("p", "muted", "Could not fetch suggestions right now."));
+      }
+    });
+  });
+
   checkHealth();
   loadBriefing();
   loadCards();
@@ -766,4 +939,5 @@
   loadSkills();
   loadHistory();
   loadActivity();
+  loadTasks();
 })();

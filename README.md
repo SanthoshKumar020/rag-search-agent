@@ -18,10 +18,22 @@ Everything runs on **free tiers** (Groq / HuggingFace). With no API keys it stil
 | **Goals** | Long-running objectives across sessions |
 | **Artifacts** | Saved documents/code the agent produces |
 
+## What's inside (v3)
+
+Everything in v2, plus:
+
+- **⏰ Scheduled tasks** — say *"Tomorrow 11:00 am, check trains from Chennai to Madurai and note the options"* in Agent mode (or use the Tasks panel / `python agent.py tasks add "..." --at "tomorrow 11:00 am"`). The instruction + due time (IST-aware; understands "tomorrow 11:00 am", "in 2 hours", weekday names, ISO) are stored in `tasks.json`. **How execution works, honestly:**
+  - **Locally:** run `python run_tasks.py` — it polls every minute and executes due tasks through the agent loop, logging results to the Activity panel. This is the always-on piece; it fires only while that process runs on your computer.
+  - **On Vercel:** serverless functions can't wake themselves, so tasks are stored and listed, and you execute one on demand with the ▶ button (or `POST /api/tasks/run`). The stored list is also ephemeral there (temp-dir storage, like memory).
+  - **Safety:** a scheduled task runs under the same rules as a live request — it can research, browse and prepare, but it **can never complete a payment or send a real message**. A task like "book the 11 am Tatkal ticket" will prepare everything and stop at the IRCTC login/CAPTCHA/payment step, explaining what you must do. That step is yours, by design.
+- **💛 Friend mode (mood companion)** — tell the agent *"I feel sad"* (Agent mode) or tap a mood in the **Mood panel**: it responds like a friend first, then suggests songs (iTunes API — page + 30-second preview links), shows (TVMaze) and movie lists (web search) matched to the mood. Tamil + English songs by default; `python agent.py mood sad` works too.
+- **🔗 Webhook trigger** — `POST /api/webhook/run {"task": "..."}` runs the agent once and returns its answer, n8n-style, so external automations can trigger it. Set `AGENT_WEBHOOK_TOKEN` to require an `X-Agent-Token` header. Same safety rules apply.
+- **🧾 Tool schemas** — every tool now has a structured, MCP-style schema (name, description, JSON-Schema parameters) in `agent_core.TOOL_SCHEMAS`, served at `GET /api/tools` for discovery by other programs.
+
 ## What's inside (v2)
 
 - **Modes** — Ask (grounded Q&A), Reply (grounded drafts), Browse (local Chromium), Agent (multi-step tool loop), plus a **Live activity panel** that streams every page the agent opens.
-- **Agent tools** — `web_search`, `fetch_page`, `browse`, `get_datetime`, `weather` (Open-Meteo), `news` (Google News / BBC RSS), `wikipedia`, `calculate` (safe AST arithmetic — no eval), `currency` (open.er-api.com), `remember` / `recall_memory`, `create_goal` / `update_goal` / `list_goals`, `create_reminder` / `list_reminders`, `save_artifact`, `list_skills` / `use_skill`, `finish`. All network tools are free and keyless.
+- **Agent tools** — `web_search`, `fetch_page`, `browse`, `get_datetime`, `weather` (Open-Meteo), `news` (Google News / BBC RSS), `wikipedia`, `calculate` (safe AST arithmetic — no eval), `currency` (open.er-api.com), `remember` / `recall_memory`, `create_goal` / `update_goal` / `list_goals`, `create_reminder` / `list_reminders`, `save_artifact`, `list_skills` / `use_skill`, `finish` — plus (v3) `create_task` / `list_tasks` / `cancel_task` and `suggest_media`. All network tools are free and keyless.
 - **Skills** — reusable instruction packs in `skills/*.md` (front-matter `name` + `description`, then instructions). Ships with `interview-prep` (Data Engineer coaching), `job-hunt-tracker` (JD → fit analysis + goal + memory), and `daily-briefing`. In Agent mode: *"Use the daily-briefing skill and brief me."* List them with `python agent.py skills`.
 - **☀️ Briefing panel** — the web UI opens with today's date, weather for your city (memory preference `city`, default Chennai), reminders due today/overdue, active goals, latest memory facts, and newest artifacts (`GET /api/briefing`).
 - **Reminders** — `python agent.py remind add "Revise SQL joins" --due 2026-11-25`, `remind list`, `remind done <id>`.
@@ -117,6 +129,9 @@ On Vercel, Ask/Reply work; Browse and heavy Agent tools that need Chromium stay 
 | `goals.py` | Goal tracker |
 | `artifacts.py` | Saved outputs |
 | `reminders.py` | Reminders store |
+| `tasks.py` | Scheduled tasks store + IST natural-language time parsing |
+| `run_tasks.py` | Local runner: polls and executes due tasks |
+| `media.py` | Mood companion suggestions (iTunes / TVMaze / web search) |
 | `skills.py` + `skills/*.md` | Skill loader + starter skills |
 | `tools_extra.py` | Keyless tools: datetime, weather, news, Wikipedia, calculator, currency |
 | `briefing.py` | Morning briefing assembly (`/api/briefing`) |
