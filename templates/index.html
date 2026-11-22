@@ -3,30 +3,34 @@
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
-  <title>Search + RAG Reply Agent</title>
+  <title>Search + RAG + Personal Agent</title>
   <link rel="stylesheet" href="{{ url_for('static', filename='style.css') }}">
 </head>
 <body>
   <main class="wrap">
     <header>
-      <h1>🔎 Search + RAG Reply Agent</h1>
-      <p class="sub">Ask a question, draft a reply, or let the agent <strong>drive a real browser</strong>
-        to complete multi-step tasks (BookMyShow, forms, research sites…) grounded in live pages.</p>
+      <h1>🔎 Personal Search + Agent</h1>
+      <p class="sub">Ask, draft replies, drive a real browser, or run a <strong>Muse-inspired agent</strong>
+        with memory, goals, and artifacts — grounded in live web evidence.</p>
     </header>
 
     <section class="card">
       <div class="modes" role="radiogroup" aria-label="Mode">
         <label>
           <input type="radio" name="mode" value="ask" checked>
-          <span>Ask — grounded answer</span>
+          <span>Ask</span>
         </label>
         <label>
           <input type="radio" name="mode" value="reply">
-          <span>Reply — draft a response</span>
+          <span>Reply</span>
         </label>
         <label>
           <input type="radio" name="mode" value="browse">
-          <span>Browse — act in a real browser</span>
+          <span>Browse</span>
+        </label>
+        <label>
+          <input type="radio" name="mode" value="agent">
+          <span>Agent</span>
         </label>
       </div>
 
@@ -38,25 +42,28 @@
           <input type="checkbox" id="use-web" checked>
           <span>Use web search</span>
         </label>
-        <button id="go" type="button">Run agent</button>
+        <button id="go" type="button">Run</button>
       </div>
 
       <p id="browse-hint" class="browse-hint hidden">
-        Browse mode opens a real Chromium and follows your instructions step by step.
-        It will <strong>never submit payment</strong>. Works best locally (not on pure serverless).
-        Example: <em>Open BookMyShow, search for [movie], pick 2 seats in [city] today, stop before payment.</em>
+        Browse opens real Chromium and follows instructions step by step.
+        It will <strong>never submit payment</strong>. Local only (not on Vercel).
+      </p>
+      <p id="agent-hint" class="browse-hint hidden">
+        Agent mode uses tools: web search, fetch, memory, goals, artifacts, optional browse.
+        Example: <em>Research top 3 vector DBs and save a comparison markdown.</em>
       </p>
 
       <div id="status" class="status hidden">
         <span class="spinner"></span>
-        <span id="status-text">Working… searching, reading pages and retrieving evidence. This can take 20–60 seconds.</span>
+        <span id="status-text">Working…</span>
       </div>
       <p id="error" class="error hidden"></p>
     </section>
 
     <section id="live" class="card hidden" aria-live="polite">
       <div class="live-head">
-        <h2 id="live-title">🌐 Live browser</h2>
+        <h2 id="live-title">🌐 Live activity</h2>
         <span id="live-state" class="live-state">idle</span>
       </div>
       <p id="live-search" class="live-search hidden"></p>
@@ -80,10 +87,8 @@
     </section>
 
     <footer>
-      <p>Free tiers only (Groq / HuggingFace). With no LLM key configured the
-        agent returns the retrieved evidence instead of a generated answer.
-        Browse mode needs <code>browser-use</code> + a local Chromium.
-        Answers are only as good as their sources — check the citations.</p>
+      <p>Free tiers (Groq / HuggingFace). Muse-inspired features: memory, goals, artifacts, tool loop.
+        Not a full Meta Muse clone — no cloud VM, payments, or OAuth mail.</p>
     </footer>
   </main>
   <script src="{{ url_for('static', filename='app.js') }}"></script>
