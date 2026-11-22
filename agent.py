@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Search + RAG Reply Agent — command line entry point.
+"""Search + RAG Reply + Personal Agent — command line entry point.
 
 Usage:
   python agent.py ask "What is Delta Lake?"
@@ -7,14 +7,14 @@ Usage:
   python agent.py reply "Thanks for your email — can you explain pricing?"
   python agent.py add path/to/file-or-folder
   python agent.py browse "Open BookMyShow and book a movie ticket for today…"
+  python agent.py agent "Research best laptops under 50k and save a comparison"
+  python agent.py memory list
+  python agent.py goals list
+  python agent.py artifacts list
 
-Pipeline: web search (DuckDuckGo) -> fetch pages -> chunk -> embed ->
-vector retrieve -> free LLM (Groq / HuggingFace) writes a grounded
-answer or reply with source citations. With no LLM key it prints the
-retrieved evidence instead, so it still works with zero keys.
-
-The optional `browse` command drives a real Chromium via browser-use
-so the agent can click, type and complete multi-step web tasks.
+Pipeline: web search -> fetch -> chunk -> embed -> retrieve -> LLM.
+Optional browse drives real Chromium. The `agent` command runs a
+Muse-inspired multi-step tool loop with memory, goals, and artifacts.
 """
 import argparse
 import sys
@@ -34,22 +34,11 @@ def log(step: str) -> None:
     print(f"  [{step}]", file=sys.stderr)
 
 
-# ----------------------------------------------------------------------
-# Evidence gathering
-# ----------------------------------------------------------------------
 def _noop_event(event: dict) -> None:
-    """Default on_event callback: ignore progress events (CLI behaviour)."""
+    pass
 
 
 def web_evidence(query: str, on_event=None) -> list[dict]:
-    """Search the web, fetch top pages, chunk them, retrieve the best.
-
-    `on_event` is an optional callback invoked with a progress-event
-    dict at each stage (search / results / fetch / fetched /
-    fetch_failed / indexed / retrieved) so callers such as the web UI
-    can render the agent's browsing live. The CLI passes nothing and
-    behaves exactly as before.
-    """
     emit = on_event or _noop_event
     log(f"searching the web for: {query}")
     emit({"type": "search", "query": query})
@@ -114,11 +103,7 @@ def local_evidence(query: str, on_event=None) -> list[dict]:
     return hits
 
 
-# ----------------------------------------------------------------------
-# Output
-# ----------------------------------------------------------------------
 def format_sources(hits: list[dict]) -> list[str]:
-    """Unique sources in first-seen order -> ['Title — URL', ...]."""
     seen, out = set(), []
     for h in hits:
         key = h["source"]
@@ -149,9 +134,6 @@ def evidence_block(hits: list[dict], sources: list[str]) -> str:
     return "\n\n".join(lines)
 
 
-# ----------------------------------------------------------------------
-# Commands
-# ----------------------------------------------------------------------
 def cmd_ask(args) -> int:
     query = args.question
     hits = local_evidence(query) if args.local else web_evidence(query)
@@ -181,8 +163,6 @@ def cmd_ask(args) -> int:
 
 
 def reply_search_query(message: str) -> str:
-    """Turn an incoming message into a search query: drop greetings
-    ('Hi,', 'Hello team,' ...) and cap the length."""
     import re
 
     lines = [ln.strip() for ln in message.splitlines() if ln.strip()]
@@ -270,7 +250,6 @@ def cmd_add(args) -> int:
 
 
 def cmd_browse(args) -> int:
-    """Drive a real browser to complete a multi-step web task."""
     try:
         import browser_agent
     except ImportError:
@@ -313,11 +292,116 @@ def cmd_browse(args) -> int:
     return 0
 
 
-# ----------------------------------------------------------------------
+def cmd_agent(args) -> int:
+    """Muse-inspired multi-step tool-using agent."""
+    import agent_core
+
+    task = args.task.strip()
+    if not task:
+        print("Please provide a non-empty task.", file=sys.stderr)
+        return 1
+
+    log(f"personal agent starting (max_steps={args.max_steps})")
+
+    def _cli_event(ev: dict) -> None:
+        t = ev.get("type")
+        if t == "agent_start":
+            log(f"task: {ev.get('task', '')[:120]}")
+        elif t == "agent_thinking":
+            log(f"thinking step {ev.get('step')}/{ev.get('max_steps')}")
+        elif t == "tool":
+            log(f"tool: {ev.get('tool')} {ev.get('query') or ev.get('url') or ev.get('task') or ''}".strip())
+        elif t == "tool_result":
+            log(f"result ({ev.get('tool')}): {(ev.get('preview') or '')[:80]}")
+        elif t == "agent_done":
+            log("agent finished")
+
+    result = agent_core.run_agent(
+        task, max_steps=args.max_steps, on_event=_cli_event
+    )
+    print("\n--- Agent result ---\n")
+    print(result.get("answer") or "")
+    if result.get("steps"):
+        print("\nSteps:")
+        for s in result["steps"]:
+            print(f"  - {s}")
+    print()
+    return 0
+
+
+def cmd_memory(args) -> int:
+    import memory
+
+    if args.memory_cmd == "list":
+        lines = memory.recall(args.query or "")
+        if not lines:
+            print("(memory is empty)")
+        else:
+            for ln in lines:
+                print(f"  - {ln}")
+        return 0
+    if args.memory_cmd == "add":
+        print(memory.remember(args.text, kind=args.kind))
+        return 0
+    if args.memory_cmd == "clear":
+        print(memory.clear())
+        return 0
+    print("Unknown memory command", file=sys.stderr)
+    return 1
+
+
+def cmd_goals(args) -> int:
+    import goals
+
+    if args.goals_cmd == "list":
+        items = goals.list_goals(None if args.all else "active")
+        if not items:
+            print("(no goals)")
+            return 0
+        for g in items:
+            print(f"  [{g['id']}] ({g['status']}) {g['title']}")
+            if g.get("plan"):
+                print(f"      plan: {g['plan'][:120]}")
+        return 0
+    if args.goals_cmd == "add":
+        g = goals.create(args.title, args.plan or "")
+        print(f"Created [{g['id']}]: {g['title']}")
+        return 0
+    if args.goals_cmd == "done":
+        g = goals.update(args.id, status="done", note=args.note or "marked done")
+        print(f"Done [{g['id']}]: {g['title']}")
+        return 0
+    print("Unknown goals command", file=sys.stderr)
+    return 1
+
+
+def cmd_artifacts(args) -> int:
+    import artifacts
+
+    if args.artifacts_cmd == "list":
+        items = artifacts.list_artifacts()
+        if not items:
+            print("(no artifacts)")
+            return 0
+        for a in items:
+            print(f"  [{a['id']}] {a['title']} → {a['path']} ({a['chars']} chars)")
+        return 0
+    if args.artifacts_cmd == "show":
+        item = artifacts.get(args.id)
+        if not item:
+            print(f"Artifact not found: {args.id}", file=sys.stderr)
+            return 1
+        print(f"# {item['title']}\n")
+        print(item.get("content") or "(file missing)")
+        return 0
+    print("Unknown artifacts command", file=sys.stderr)
+    return 1
+
+
 def main() -> int:
     parser = argparse.ArgumentParser(
         prog="agent.py",
-        description="Search + RAG Reply Agent (free-tier LLMs)",
+        description="Search + RAG + personal agent (free-tier LLMs)",
     )
     sub = parser.add_subparsers(dest="command", required=True)
 
@@ -337,23 +421,49 @@ def main() -> int:
 
     p_browse = sub.add_parser(
         "browse",
-        help="drive a real browser to complete a multi-step web task "
-             "(requires browser-use + LLM key)",
+        help="drive a real browser (requires browser-use + LLM key)",
     )
-    p_browse.add_argument(
-        "task",
-        help='e.g. "Open BookMyShow, search for [movie], pick 2 seats, '
-             'stop before payment"',
-    )
-    p_browse.add_argument(
-        "--max-steps", type=int, default=40,
-        help="safety limit on browser actions (default 40)",
-    )
-    p_browse.add_argument(
-        "--show", action="store_true",
-        help="show the browser window (default is headless)",
-    )
+    p_browse.add_argument("task")
+    p_browse.add_argument("--max-steps", type=int, default=40)
+    p_browse.add_argument("--show", action="store_true")
     p_browse.set_defaults(func=cmd_browse)
+
+    p_agent = sub.add_parser(
+        "agent",
+        help="Muse-inspired multi-step agent (search, memory, goals, artifacts)",
+    )
+    p_agent.add_argument("task")
+    p_agent.add_argument("--max-steps", type=int, default=8)
+    p_agent.set_defaults(func=cmd_agent)
+
+    p_mem = sub.add_parser("memory", help="list / add / clear personal memory")
+    mem_sub = p_mem.add_subparsers(dest="memory_cmd", required=True)
+    m_list = mem_sub.add_parser("list")
+    m_list.add_argument("query", nargs="?", default="")
+    m_add = mem_sub.add_parser("add")
+    m_add.add_argument("text")
+    m_add.add_argument("--kind", choices=("fact", "preference"), default="fact")
+    mem_sub.add_parser("clear")
+    p_mem.set_defaults(func=cmd_memory)
+
+    p_goals = sub.add_parser("goals", help="list / add / complete goals")
+    g_sub = p_goals.add_subparsers(dest="goals_cmd", required=True)
+    g_list = g_sub.add_parser("list")
+    g_list.add_argument("--all", action="store_true")
+    g_add = g_sub.add_parser("add")
+    g_add.add_argument("title")
+    g_add.add_argument("--plan", default="")
+    g_done = g_sub.add_parser("done")
+    g_done.add_argument("id")
+    g_done.add_argument("--note", default="")
+    p_goals.set_defaults(func=cmd_goals)
+
+    p_art = sub.add_parser("artifacts", help="list / show saved artifacts")
+    a_sub = p_art.add_subparsers(dest="artifacts_cmd", required=True)
+    a_sub.add_parser("list")
+    a_show = a_sub.add_parser("show")
+    a_show.add_argument("id")
+    p_art.set_defaults(func=cmd_artifacts)
 
     args = parser.parse_args()
     log(f"embeddings: {config.embed_backend()} | llm: {config.llm_backend()}")
